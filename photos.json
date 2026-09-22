@@ -1,0 +1,26 @@
+[
+  {
+    "file": "photos/drum-circle.jpg",
+    "caption": "Drummers on the upper terrace at sunset",
+    "date": "2026-09-13",
+    "event": "Sunday Drum Circle",
+    "location": "Upper terrace",
+    "tags": ["drums", "music", "sunset", "crowd"]
+  },
+  {
+    "file": "photos/fountain.jpg",
+    "caption": "The cascading fountain on a sunny afternoon",
+    "date": "2026-09-06",
+    "event": "",
+    "location": "Cascade fountain",
+    "tags": ["fountain", "water", "architecture"]
+  },
+  {
+    "file": "photos/picnic.jpg",
+    "caption": "Friends sharing food on the lower lawn",
+    "date": "2026-09-20",
+    "event": "Malcolm X Park Community Picnic",
+    "location": "Lower lawn",
+    "tags": ["picnic", "food", "lawn"]
+  }
+]

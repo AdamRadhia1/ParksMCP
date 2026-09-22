@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "name": "Sunday Drum Circle",
+    "date": "2026-10-04",
+    "time": "3:00 PM",
+    "location": "Upper terrace, Meridian Hill Park",
+    "description": "A long-running community gathering of drummers and dancers. (SAMPLE - replace with real details)"
+  },
+  {
+    "id": 2,
+    "name": "Malcolm X Park Community Picnic",
+    "date": "2026-10-11",
+    "time": "12:00 PM",
+    "location": "Lower lawn, Meridian Hill Park",
+    "description": "Bring a blanket and food to share. (SAMPLE - replace with real details)"
+  },
+  {
+    "id": 3,
+    "name": "Fall Yoga in the Park",
+    "date": "2026-10-18",
+    "time": "9:00 AM",
+    "location": "Near the fountain",
+    "description": "Free outdoor yoga class, all levels. (SAMPLE - replace with real details)"
+  }
+]
