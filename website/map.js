@@ -55,7 +55,7 @@ map.on('style.load', () => {
   // Standard's own 3D buildings use real footprints/heights plus modeled landmarks.
   map.setConfigProperty('basemap', 'show3dObjects', true);
   // Remove the distance haze / horizon glow, keeping the sky itself.
-  map.setFog({ range: [10, 100000], 'horizon-blend': 0 });
+  map.setFog({ range: [10, 20], 'horizon-blend': 0 });
 
   if (!map.getSource('mapbox-dem')) {
     map.addSource('mapbox-dem', {
@@ -78,6 +78,7 @@ setInterval(refreshTimeOfDay, 5 * 60 * 1000);
 map.once('idle', () => {
   addGrassLayer();
   addWaterLayer();
+  addTreeLayer();
 });
 
 // ---------------------------------------------------------------------------
@@ -541,6 +542,278 @@ function addWaterLayer() {
       gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
 
       gl.disable(gl.BLEND);
+
+      map.triggerRepaint();
+    }
+  };
+
+  map.addLayer(layer);
+}
+
+// ---------------------------------------------------------------------------
+// Tree layer — low-poly faceted trees (hex-cylinder trunks, hex-bipyramid
+// canopy lobes) scattered across the two lawns, swaying gently in the wind.
+// Built as one static, non-indexed triangle soup so each face keeps its own
+// unshared vertices/normals for a flat-shaded, faceted "game" look.
+// ---------------------------------------------------------------------------
+function seededRandom(seed) {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function subVec3(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function crossVec3(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0]
+  ];
+}
+function normalizeVec3(v) {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+// Pushes one flat-shaded triangle (own normal, own material/seed/sway per
+// vertex) into the shared arrays.
+function pushTri(arrays, p0, p1, p2, material, seed, sway0, sway1, sway2) {
+  const n = normalizeVec3(crossVec3(subVec3(p1, p0), subVec3(p2, p0)));
+  const pts = [p0, p1, p2];
+  const sways = [sway0, sway1, sway2];
+  for (let k = 0; k < 3; k++) {
+    arrays.positions.push(pts[k][0], pts[k][1], pts[k][2]);
+    arrays.normals.push(n[0], n[1], n[2]);
+    arrays.materials.push(material);
+    arrays.seeds.push(seed);
+    arrays.sways.push(sways[k]);
+  }
+}
+
+// A ring of `sides` points around (cx, cy) at height cz and radius r.
+function ring(cx, cy, cz, r, sides) {
+  const pts = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2;
+    pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r, cz]);
+  }
+  return pts;
+}
+
+// Tapered hex-cylinder trunk, side faces only (top/bottom hidden by canopy
+// and grass respectively).
+function buildTrunk(arrays, cx, cy, baseZ, height, baseR, topR, seed) {
+  const sides = 6;
+  const bottom = ring(cx, cy, baseZ, baseR, sides);
+  const top = ring(cx, cy, baseZ + height, topR, sides);
+  for (let i = 0; i < sides; i++) {
+    const j = (i + 1) % sides;
+    pushTri(arrays, bottom[i], bottom[j], top[i], 0.0, seed, 0, 0, 0.1);
+    pushTri(arrays, top[i], bottom[j], top[j], 0.0, seed, 0.1, 0, 0.1);
+  }
+}
+
+// One hex-bipyramid "leaf cluster" lobe: an apex above and a point below a
+// hexagonal equator, giving a faceted rounded-diamond canopy shape.
+function buildFoliageLobe(arrays, cx, cy, cz, radiusXY, halfHeight, seed, swayBase) {
+  const sides = 6;
+  const equator = ring(cx, cy, cz, radiusXY, sides);
+  const apex = [cx, cy, cz + halfHeight];
+  const nadir = [cx, cy, cz - halfHeight * 0.6];
+  for (let i = 0; i < sides; i++) {
+    const j = (i + 1) % sides;
+    pushTri(arrays, equator[i], equator[j], apex, 1.0, seed, swayBase, swayBase, swayBase + 0.35);
+    pushTri(arrays, equator[j], equator[i], nadir, 1.0, seed, swayBase, swayBase, swayBase * 0.5);
+  }
+}
+
+function buildTree(arrays, lng, lat, seedBase) {
+  const [cx, cy] = toLocalMeters(lng, lat);
+  const groundZ = (map.queryTerrainElevation([lng, lat], { exaggerated: true }) || 0) + 0.03;
+
+  const s1 = seededRandom(seedBase);
+  const s2 = seededRandom(seedBase + 17.3);
+  const s3 = seededRandom(seedBase + 41.7);
+
+  const trunkHeight = 2.0 + s1 * 1.6;
+  const trunkBaseR = 0.16 + s2 * 0.07;
+  const trunkTopR = trunkBaseR * 0.55;
+  buildTrunk(arrays, cx, cy, groundZ, trunkHeight, trunkBaseR, trunkTopR, seedBase);
+
+  const canopyBaseZ = groundZ + trunkHeight * 0.92;
+  const mainRadius = 1.5 + s3 * 0.9;
+  buildFoliageLobe(arrays, cx, cy, canopyBaseZ + mainRadius * 0.5, mainRadius, mainRadius * 0.85, seedBase + 1.0, 0.5);
+
+  // A second, smaller offset lobe breaks up the pure-diamond silhouette.
+  const s4 = seededRandom(seedBase + 63.1);
+  const s5 = seededRandom(seedBase + 88.4);
+  const lobeAngle = s4 * Math.PI * 2;
+  const lobeDist = mainRadius * 0.55;
+  const lobeR = mainRadius * (0.55 + s5 * 0.2);
+  buildFoliageLobe(
+    arrays,
+    cx + Math.cos(lobeAngle) * lobeDist,
+    cy + Math.sin(lobeAngle) * lobeDist,
+    canopyBaseZ + mainRadius * 0.3,
+    lobeR,
+    lobeR * 0.85,
+    seedBase + 2.0,
+    0.5
+  );
+}
+
+// Jittered-grid scatter over a lng/lat rectangle so trees stay spaced out
+// without an expensive collision-rejection loop.
+function scatterTrees(arrays, lngMin, lngMax, latMin, latMax, cols, rows, density, seedStart) {
+  let seed = seedStart;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      seed += 7.919;
+      if (seededRandom(seed) > density) continue;
+      const jx = (seededRandom(seed + 3.1) - 0.5) * 0.8;
+      const jy = (seededRandom(seed + 6.2) - 0.5) * 0.8;
+      const u = (c + 0.5 + jx) / cols;
+      const v = (r + 0.5 + jy) / rows;
+      const lng = lerp(lngMin, lngMax, u);
+      const lat = lerp(latMin, latMax, v);
+      buildTree(arrays, lng, lat, seed * 13.37);
+    }
+  }
+}
+
+const treeVertexSrc = `
+  attribute vec3 a_position;
+  attribute vec3 a_normal;
+  attribute float a_material;
+  attribute float a_seed;
+  attribute float a_sway;
+  uniform mat4 u_matrix;
+  uniform float u_time;
+  varying vec3 v_normal;
+  varying float v_material;
+  varying float v_seed;
+  void main() {
+    vec3 pos = a_position;
+    float wind = sin(u_time * 1.1 + a_seed * 6.283) * 0.16 * a_sway;
+    pos.x += wind;
+    pos.y += wind * 0.5;
+    v_normal = a_normal;
+    v_material = a_material;
+    v_seed = a_seed;
+    gl_Position = u_matrix * vec4(pos, 1.0);
+  }
+`;
+
+const treeFragmentSrc = `
+  precision mediump float;
+  varying vec3 v_normal;
+  varying float v_material;
+  varying float v_seed;
+  uniform vec3 u_lightDir;
+  float hash(float x) { return fract(sin(x) * 43758.5453123); }
+  void main() {
+    float diffuse = max(dot(normalize(v_normal), u_lightDir), 0.0);
+    float light = 0.45 + diffuse * 0.55;
+
+    vec3 trunkColor = mix(vec3(0.30, 0.20, 0.12), vec3(0.40, 0.28, 0.16), hash(v_seed));
+    vec3 foliageA = vec3(0.14, 0.34, 0.13);
+    vec3 foliageB = vec3(0.30, 0.52, 0.20);
+    vec3 foliageColor = mix(foliageA, foliageB, hash(v_seed * 3.1 + 1.0));
+
+    vec3 base = mix(trunkColor, foliageColor, step(0.5, v_material));
+    gl_FragColor = vec4(base * light, 1.0);
+  }
+`;
+
+function addTreeLayer() {
+  const arrays = { positions: [], normals: [], materials: [], seeds: [], sways: [] };
+
+  // West and east lawns, inset from the water channel and the outer park
+  // edge so trees don't crowd the fountain or spill onto the paths.
+  scatterTrees(arrays, PARK_WEST_LNG + 0.00012, CHANNEL_WEST_LNG - 0.00008, PARK_SOUTH_LAT + 0.0004, PARK_NORTH_LAT - 0.0004, 5, 9, 0.55, 101);
+  scatterTrees(arrays, CHANNEL_EAST_LNG + 0.00008, PARK_EAST_LNG - 0.00012, PARK_SOUTH_LAT + 0.0004, PARK_NORTH_LAT - 0.0004, 5, 9, 0.55, 907);
+
+  const positions = new Float32Array(arrays.positions);
+  const normals = new Float32Array(arrays.normals);
+  const materials = new Float32Array(arrays.materials);
+  const seeds = new Float32Array(arrays.seeds);
+  const sways = new Float32Array(arrays.sways);
+  const vertexCount = materials.length;
+
+  const layer = {
+    id: 'park-trees',
+    type: 'custom',
+    slot: 'middle',
+    renderingMode: '3d',
+
+    onAdd(mapInstance, gl) {
+      this.program = createProgram(gl, treeVertexSrc, treeFragmentSrc);
+      this.aPosition = gl.getAttribLocation(this.program, 'a_position');
+      this.aNormal = gl.getAttribLocation(this.program, 'a_normal');
+      this.aMaterial = gl.getAttribLocation(this.program, 'a_material');
+      this.aSeed = gl.getAttribLocation(this.program, 'a_seed');
+      this.aSway = gl.getAttribLocation(this.program, 'a_sway');
+      this.uMatrix = gl.getUniformLocation(this.program, 'u_matrix');
+      this.uTime = gl.getUniformLocation(this.program, 'u_time');
+      this.uLightDir = gl.getUniformLocation(this.program, 'u_lightDir');
+
+      this.posBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+      this.normalBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.normalBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+
+      this.materialBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.materialBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, materials, gl.STATIC_DRAW);
+
+      this.seedBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.seedBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, seeds, gl.STATIC_DRAW);
+
+      this.swayBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.swayBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, sways, gl.STATIC_DRAW);
+    },
+
+    render(gl, matrix) {
+      if (!vertexCount) return;
+      const modelMatrix = translationMat4(origin.x, origin.y, 0);
+      const finalMatrix = multiplyMat4(
+        Array.from(matrix),
+        multiplyMat4(modelMatrix, scaleMat4(meterScale, meterScale, meterScale))
+      );
+
+      gl.useProgram(this.program);
+      gl.uniformMatrix4fv(this.uMatrix, false, new Float32Array(finalMatrix));
+      gl.uniform1f(this.uTime, performance.now() / 1000);
+      gl.uniform3f(this.uLightDir, 0.4, 0.35, 0.85);
+
+      gl.enable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
+      gl.enableVertexAttribArray(this.aPosition);
+      gl.vertexAttribPointer(this.aPosition, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.normalBuffer);
+      gl.enableVertexAttribArray(this.aNormal);
+      gl.vertexAttribPointer(this.aNormal, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.materialBuffer);
+      gl.enableVertexAttribArray(this.aMaterial);
+      gl.vertexAttribPointer(this.aMaterial, 1, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.seedBuffer);
+      gl.enableVertexAttribArray(this.aSeed);
+      gl.vertexAttribPointer(this.aSeed, 1, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.swayBuffer);
+      gl.enableVertexAttribArray(this.aSway);
+      gl.vertexAttribPointer(this.aSway, 1, gl.FLOAT, false, 0, 0);
+
+      gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
 
       map.triggerRepaint();
     }
