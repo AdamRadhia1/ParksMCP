@@ -95,7 +95,6 @@ map.once('idle', () => {
     addGrassLayer();
     addWaterLayer();
     addTreeLayer();
-    addFountain();
     addLifeLayer();
   });
 });
@@ -311,13 +310,22 @@ function buildGrid(lngMin, lngMax, latMin, latMax, nx, ny, lift) {
   const uvs = [];
   const indices = [];
 
+  // queryTerrainElevation can intermittently return null for individual
+  // points even long after the DEM is loaded (seen across ~700 rapid calls
+  // here) — falling back to 0 in that case punches wild spikes into an
+  // otherwise-smooth grid, so a failed query instead reuses the last
+  // successfully-queried elevation (adjacent grid points are only a couple
+  // meters apart, so terrain can't have actually jumped between them).
+  let lastElev = 0;
   for (let j = 0; j <= ny; j++) {
     const lat = lerp(latMin, latMax, j / ny);
     for (let i = 0; i <= nx; i++) {
       const lng = lerp(lngMin, lngMax, i / nx);
       const [x, y] = toLocalMeters(lng, lat);
-      const elev = (map.queryTerrainElevation([lng, lat], { exaggerated: true }) || 0) + lift;
-      positions.push(x, y, elev);
+      const queried = map.queryTerrainElevation([lng, lat], { exaggerated: true });
+      const base = queried !== null && queried !== undefined ? queried : lastElev;
+      lastElev = base;
+      positions.push(x, y, base + lift);
       uvs.push(i / nx, j / ny);
     }
   }
@@ -384,7 +392,7 @@ const grassVertexSrc = `
 `;
 
 const grassFragmentSrc = `
-  precision mediump float;
+  precision highp float;
   varying vec2 v_uv;
   varying float v_bump;
   uniform float u_time;
@@ -488,7 +496,7 @@ const waterVertexSrc = `
 `;
 
 const waterFragmentSrc = `
-  precision mediump float;
+  precision highp float;
   varying vec2 v_uv;
   uniform float u_time;
   float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
@@ -503,8 +511,96 @@ const waterFragmentSrc = `
   }
 `;
 
+// Standard's basemap layers live inside a sealed style "import" — they don't
+// show up in map.getStyle().layers and queryRenderedFeatures can't see them
+// either, so there's no way to discover their real geometry from code. These
+// two small ponds were instead found by eye against the rendered basemap
+// (same "stylized, not surveyed" approach as the rest of this file) and are
+// approximated here as small circles so they can get the same animated
+// ripple treatment as the main channel instead of sitting there static.
+const EXTRA_PONDS = [
+  { center: [-77.03618, 38.92070], radius: 9 },
+  { center: [-77.03529, 38.92074], radius: 10 }
+];
+
+// Flat-earth approximation for offsetting a lng/lat point by meters — plenty
+// accurate at the few-meter scale of these small ponds.
+function metersToLngLatOffset(centerLat, dx, dy) {
+  const dLat = dy / 111320;
+  const dLng = dx / (111320 * Math.cos((centerLat * Math.PI) / 180));
+  return [dLng, dLat];
+}
+
+function circleRingLngLat(centerLng, centerLat, radiusMeters, sides) {
+  sides = sides || 14;
+  const pts = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2;
+    const [dLng, dLat] = metersToLngLatOffset(centerLat, Math.cos(a) * radiusMeters, Math.sin(a) * radiusMeters);
+    pts.push([centerLng + dLng, centerLat + dLat]);
+  }
+  return pts;
+}
+
+function gatherParkPonds() {
+  return EXTRA_PONDS.map((p) => circleRingLngLat(p.center[0], p.center[1], p.radius, 14));
+}
+
+// Fan-triangulates each pond ring from its centroid (fine for the small,
+// roughly-convex pond blobs OSM has here) and builds one flat, non-indexed
+// triangle list with UVs normalized to each pond's own bounding box, so the
+// same ripple/shimmer shader as the channel reads sensibly on each one.
+// A pond's surface is level, so elevation is queried once at its center and
+// reused for every vertex — querying per-vertex (like the terrain-following
+// channel grid does) turned out to return wildly inconsistent values across
+// a single small pond, presumably from hitting not-yet-resolved DEM samples.
+function buildPondMesh(ponds) {
+  const positions = [];
+  const uvs = [];
+  ponds.forEach((ring) => {
+    let pts = ring.map(([lng, lat]) => {
+      const [x, y] = toLocalMeters(lng, lat);
+      return [x, y, lng, lat];
+    });
+    if (pts.length > 1) {
+      const a = pts[0], b = pts[pts.length - 1];
+      if (Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6) pts = pts.slice(0, -1);
+    }
+    if (pts.length < 3) return;
+
+    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    let cx = 0, cy = 0;
+    pts.forEach(([x, y, lng, lat]) => {
+      minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng);
+      minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
+      cx += x; cy += y;
+    });
+    const n = pts.length;
+    cx /= n; cy /= n;
+    const centerLng = (minLng + maxLng) / 2;
+    const centerLat = (minLat + maxLat) / 2;
+    const cz = (map.queryTerrainElevation([centerLng, centerLat], { exaggerated: true }) || 0) + 0.05;
+
+    const spanLng = Math.max(maxLng - minLng, 1e-9);
+    const spanLat = Math.max(maxLat - minLat, 1e-9);
+
+    for (let i = 0; i < n; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      positions.push(cx, cy, cz, a[0], a[1], cz, b[0], b[1], cz);
+      uvs.push(
+        0.5, 0.5,
+        (a[2] - minLng) / spanLng, (a[3] - minLat) / spanLat,
+        (b[2] - minLng) / spanLng, (b[3] - minLat) / spanLat
+      );
+    }
+  });
+  return { positions: new Float32Array(positions), uvs: new Float32Array(uvs), count: positions.length / 3 };
+}
+
 function addWaterLayer() {
   const mesh = buildGrid(CHANNEL_WEST_LNG, CHANNEL_EAST_LNG, PARK_SOUTH_LAT, PARK_NORTH_LAT, 14, 48, 0.06);
+  const pondMesh = buildPondMesh(gatherParkPonds());
 
   const layer = {
     id: 'park-water',
@@ -532,6 +628,17 @@ function addWaterLayer() {
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
 
       this.count = mesh.indices.length;
+
+      this.pondCount = pondMesh.count;
+      if (this.pondCount) {
+        this.pondPosBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.pondPosBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, pondMesh.positions, gl.STATIC_DRAW);
+
+        this.pondUvBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.pondUvBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, pondMesh.uvs, gl.STATIC_DRAW);
+      }
     },
 
     render(gl, matrix) {
@@ -559,6 +666,18 @@ function addWaterLayer() {
 
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuffer);
       gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
+
+      if (this.pondCount) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.pondPosBuffer);
+        gl.enableVertexAttribArray(this.aPosition);
+        gl.vertexAttribPointer(this.aPosition, 3, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.pondUvBuffer);
+        gl.enableVertexAttribArray(this.aUv);
+        gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, 0, 0);
+
+        gl.drawArrays(gl.TRIANGLES, 0, this.pondCount);
+      }
 
       gl.disable(gl.BLEND);
 
@@ -882,192 +1001,6 @@ function addTreeLayer() {
 }
 
 // ---------------------------------------------------------------------------
-// Fountain — a low stone rim around the reflecting-pool jet at the park's
-// center, plus a looping particle spray that arcs up and falls back down.
-// ---------------------------------------------------------------------------
-const fountainBasinVertexSrc = `
-  attribute vec3 a_position;
-  attribute vec3 a_normal;
-  uniform mat4 u_matrix;
-  varying vec3 v_normal;
-  void main() {
-    v_normal = a_normal;
-    gl_Position = u_matrix * vec4(a_position, 1.0);
-  }
-`;
-const fountainBasinFragmentSrc = `
-  precision mediump float;
-  varying vec3 v_normal;
-  uniform vec3 u_lightDir;
-  void main() {
-    float diffuse = max(dot(normalize(v_normal), u_lightDir), 0.0);
-    float light = 0.5 + diffuse * 0.5;
-    gl_FragColor = vec4(vec3(0.62, 0.60, 0.56) * light, 1.0);
-  }
-`;
-
-const fountainSprayVertexSrc = `
-  attribute float a_phase;
-  attribute float a_angle;
-  attribute float a_speedVar;
-  uniform mat4 u_matrix;
-  uniform float u_time;
-  uniform vec3 u_origin;
-  varying float v_alpha;
-  void main() {
-    float cycle = 1.7 + a_speedVar * 0.6;
-    float t = fract((u_time + a_phase * cycle) / cycle);
-    float height = 3.0 * (4.0 * t * (1.0 - t));
-    float radius = 0.1 + t * 1.1;
-    vec3 pos = u_origin + vec3(cos(a_angle) * radius, sin(a_angle) * radius, height + 0.15);
-    v_alpha = smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.72, 1.0, t));
-    gl_Position = u_matrix * vec4(pos, 1.0);
-    gl_PointSize = mix(7.0, 2.5, t);
-  }
-`;
-const fountainSprayFragmentSrc = `
-  precision mediump float;
-  varying float v_alpha;
-  void main() {
-    vec2 d = gl_PointCoord - vec2(0.5);
-    if (dot(d, d) > 0.25) discard;
-    gl_FragColor = vec4(0.86, 0.95, 1.0, v_alpha * 0.9);
-  }
-`;
-
-function addFountain() {
-  const fountainLng = (CHANNEL_WEST_LNG + CHANNEL_EAST_LNG) / 2;
-  const fountainLat = (PARK_SOUTH_LAT + PARK_NORTH_LAT) / 2;
-  const [fx, fy] = toLocalMeters(fountainLng, fountainLat);
-  const groundZ = (map.queryTerrainElevation([fountainLng, fountainLat], { exaggerated: true }) || 0);
-
-  // Basin rim: a short hex ring standing just above the water surface.
-  const basinArrays = { positions: [], normals: [], materials: [], seeds: [], sways: [] };
-  const sides = 10;
-  const outerR = 3.2, innerR = 2.75, rimH = 0.22;
-  const outerBottom = ring(fx, fy, groundZ, outerR, sides);
-  const outerTop = ring(fx, fy, groundZ + rimH, outerR, sides);
-  const innerBottom = ring(fx, fy, groundZ, innerR, sides);
-  const innerTop = ring(fx, fy, groundZ + rimH, innerR, sides);
-  for (let i = 0; i < sides; i++) {
-    const j = (i + 1) % sides;
-    // Outer wall
-    pushTri(basinArrays, outerBottom[i], outerBottom[j], outerTop[i], 0, 0, 0, 0, 0);
-    pushTri(basinArrays, outerTop[i], outerBottom[j], outerTop[j], 0, 0, 0, 0, 0);
-    // Top cap (flat ring surface visitors would see from above)
-    pushTri(basinArrays, outerTop[i], outerTop[j], innerTop[i], 0, 0, 0, 0, 0);
-    pushTri(basinArrays, innerTop[i], outerTop[j], innerTop[j], 0, 0, 0, 0, 0);
-  }
-  const basinPositions = new Float32Array(basinArrays.positions);
-  const basinNormals = new Float32Array(basinArrays.normals);
-  const basinCount = basinPositions.length / 3;
-
-  // Spray particles: a ring of independently-phased points arcing up/out/down.
-  const sprayCount = 260;
-  const phases = new Float32Array(sprayCount);
-  const angles = new Float32Array(sprayCount);
-  const speedVars = new Float32Array(sprayCount);
-  for (let i = 0; i < sprayCount; i++) {
-    phases[i] = seededRandom(i * 3.7 + 12.0);
-    angles[i] = seededRandom(i * 5.1 + 44.0) * Math.PI * 2;
-    speedVars[i] = seededRandom(i * 9.3 + 77.0);
-  }
-
-  const layer = {
-    id: 'park-fountain',
-    type: 'custom',
-    slot: 'top',
-    renderingMode: '3d',
-
-    onAdd(mapInstance, gl) {
-      this.basinProgram = createProgram(gl, fountainBasinVertexSrc, fountainBasinFragmentSrc);
-      this.bPosition = gl.getAttribLocation(this.basinProgram, 'a_position');
-      this.bNormal = gl.getAttribLocation(this.basinProgram, 'a_normal');
-      this.bMatrix = gl.getUniformLocation(this.basinProgram, 'u_matrix');
-      this.bLightDir = gl.getUniformLocation(this.basinProgram, 'u_lightDir');
-
-      this.basinPosBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.basinPosBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, basinPositions, gl.STATIC_DRAW);
-
-      this.basinNormalBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.basinNormalBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, basinNormals, gl.STATIC_DRAW);
-
-      this.sprayProgram = createProgram(gl, fountainSprayVertexSrc, fountainSprayFragmentSrc);
-      this.sPhase = gl.getAttribLocation(this.sprayProgram, 'a_phase');
-      this.sAngle = gl.getAttribLocation(this.sprayProgram, 'a_angle');
-      this.sSpeedVar = gl.getAttribLocation(this.sprayProgram, 'a_speedVar');
-      this.sMatrix = gl.getUniformLocation(this.sprayProgram, 'u_matrix');
-      this.sTime = gl.getUniformLocation(this.sprayProgram, 'u_time');
-      this.sOrigin = gl.getUniformLocation(this.sprayProgram, 'u_origin');
-
-      this.phaseBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.phaseBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, phases, gl.STATIC_DRAW);
-
-      this.angleBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.angleBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, angles, gl.STATIC_DRAW);
-
-      this.speedVarBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.speedVarBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, speedVars, gl.STATIC_DRAW);
-    },
-
-    render(gl, matrix) {
-      const modelMatrix = translationMat4(origin.x, origin.y, 0);
-      const finalMatrix = multiplyMat4(
-        Array.from(matrix),
-        multiplyMat4(modelMatrix, scaleMat4(meterScale, meterScale, meterScale))
-      );
-      const finalMatrixF32 = new Float32Array(finalMatrix);
-
-      gl.enable(gl.DEPTH_TEST);
-
-      // Basin
-      gl.useProgram(this.basinProgram);
-      gl.uniformMatrix4fv(this.bMatrix, false, finalMatrixF32);
-      gl.uniform3f(this.bLightDir, 0.4, 0.35, 0.85);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.basinPosBuffer);
-      gl.enableVertexAttribArray(this.bPosition);
-      gl.vertexAttribPointer(this.bPosition, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.basinNormalBuffer);
-      gl.enableVertexAttribArray(this.bNormal);
-      gl.vertexAttribPointer(this.bNormal, 3, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.TRIANGLES, 0, basinCount);
-
-      // Spray particles
-      gl.useProgram(this.sprayProgram);
-      gl.uniformMatrix4fv(this.sMatrix, false, finalMatrixF32);
-      gl.uniform1f(this.sTime, performance.now() / 1000);
-      gl.uniform3f(this.sOrigin, fx, fy, groundZ);
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.depthMask(false);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.phaseBuffer);
-      gl.enableVertexAttribArray(this.sPhase);
-      gl.vertexAttribPointer(this.sPhase, 1, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.angleBuffer);
-      gl.enableVertexAttribArray(this.sAngle);
-      gl.vertexAttribPointer(this.sAngle, 1, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.speedVarBuffer);
-      gl.enableVertexAttribArray(this.sSpeedVar);
-      gl.vertexAttribPointer(this.sSpeedVar, 1, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.POINTS, 0, sprayCount);
-
-      gl.depthMask(true);
-      gl.disable(gl.BLEND);
-
-      map.triggerRepaint();
-    }
-  };
-
-  map.addLayer(layer);
-}
-
-// ---------------------------------------------------------------------------
 // Life layer — a handful of low-poly people walking short park paths and
 // cars driving 16th St NW, all animated purely in the vertex shader (each
 // object's rigid local geometry is rotated/translated per-frame from a
@@ -1108,7 +1041,13 @@ function pushLifeBox(arrays, cx, cy, czBase, sx, sy, sz, material, seed, base, d
 // whole rigid body rotated/translated per-frame by the shader. Legs and arms
 // carry a nonzero a_side so the shader can swing them fore/aft for a walk
 // cycle (opposite-side limbs get opposite sign, like a natural gait).
-function buildPerson(arrays, startLngLat, endLngLat, phase, speed, seed) {
+// speedMs is a real walking/driving speed in meters/second — since the
+// shader ping-pongs each object back and forth across its own base->dir
+// path, one full back-and-forth cycle covers 2x the path length, so the
+// per-object cycle rate it actually needs is speedMs / (2 * pathLength).
+// This keeps a person on a long path and a person on a short path both
+// genuinely walking at ~human pace instead of one visibly sprinting.
+function buildPerson(arrays, startLngLat, endLngLat, phase, speedMs, seed) {
   const [sx, sy] = toLocalMeters(startLngLat[0], startLngLat[1]);
   const [ex, ey] = toLocalMeters(endLngLat[0], endLngLat[1]);
   const midLng = (startLngLat[0] + endLngLat[0]) / 2;
@@ -1116,6 +1055,8 @@ function buildPerson(arrays, startLngLat, endLngLat, phase, speed, seed) {
   const groundZ = (map.queryTerrainElevation([midLng, midLat], { exaggerated: true }) || 0);
   const base = [sx, sy];
   const dir = [ex - sx, ey - sy];
+  const pathLen = Math.hypot(dir[0], dir[1]) || 1;
+  const speed = speedMs / (2 * pathLen);
 
   const legLen = 0.85, torsoLen = 0.55, armLen = 0.62, headSize = 0.24;
   const hipZ = groundZ, shoulderZ = groundZ + legLen + torsoLen;
@@ -1132,7 +1073,7 @@ function buildPerson(arrays, startLngLat, endLngLat, phase, speed, seed) {
   pushLifeBox(arrays, 0, 0, shoulderZ, 0.24, 0.24, headSize, 1, seed, base, dir, phase, speed, 0, 0);
 }
 
-function buildCar(arrays, startLngLat, endLngLat, phase, speed, seed) {
+function buildCar(arrays, startLngLat, endLngLat, phase, speedMs, seed) {
   const [sx, sy] = toLocalMeters(startLngLat[0], startLngLat[1]);
   const [ex, ey] = toLocalMeters(endLngLat[0], endLngLat[1]);
   const midLng = (startLngLat[0] + endLngLat[0]) / 2;
@@ -1140,6 +1081,8 @@ function buildCar(arrays, startLngLat, endLngLat, phase, speed, seed) {
   const groundZ = (map.queryTerrainElevation([midLng, midLat], { exaggerated: true }) || 0);
   const base = [sx, sy];
   const dir = [ex - sx, ey - sy];
+  const pathLen = Math.hypot(dir[0], dir[1]) || 1;
+  const speed = speedMs / (2 * pathLen);
 
   const bodyLen = 2.0, bodyWidth = 0.95, bodyHeight = 0.5, bodyBaseZ = groundZ + 0.14;
   pushLifeBox(arrays, 0, 0, bodyBaseZ, bodyLen, bodyWidth, bodyHeight, 3, seed, base, dir, phase, speed, 1, 0);
@@ -1179,7 +1122,11 @@ const lifeVertexSrc = `
     float yaw = atan(a_dir.y * dirSign, a_dir.x * dirSign);
     float c = cos(yaw), s = sin(yaw);
 
-    float stepPhase = u_time * a_speed * 340.0 + a_phase * 10.0;
+    // A fixed ~1.8 Hz step cadence, independent of a_speed (which now varies
+    // per-object with path length to keep real-world walking/driving speed
+    // constant) — otherwise someone on a longer path would visibly take
+    // slower, longer strides than someone on a short one.
+    float stepPhase = u_time * 11.0 + a_phase * 10.0;
     float bob = a_kind < 0.5 ? abs(sin(stepPhase)) * 0.06 : 0.0;
     float swing = a_side * sin(stepPhase);
 
@@ -1238,23 +1185,28 @@ function addLifeLayer() {
   peoplePaths.forEach(([start, end]) => {
     [0.0, 0.5].forEach((phaseOffset) => {
       seed += 11.3;
-      const speed = 0.028 + seededRandom(seed) * 0.01;
-      buildPerson(arrays, start, end, phaseOffset + seededRandom(seed + 1) * 0.2, speed, seed);
+      // Real adult walking pace, ~1.3-1.6 m/s.
+      const walkSpeedMs = 1.3 + seededRandom(seed) * 0.3;
+      buildPerson(arrays, start, end, phaseOffset + seededRandom(seed + 1) * 0.2, walkSpeedMs, seed);
     });
   });
 
-  const roadLng = PARK_EAST_LNG + 0.00045;
-  const lanes = [roadLng - 0.00004, roadLng + 0.00004];
+  // Measured against the rendered basemap (unprojecting screen points on
+  // the actual paved lane), not derived from the park bounds — 15th St NW
+  // runs close to, but not flush with, the park's approximate east edge.
+  const roadLng = -77.035194;
+  const lanes = [roadLng - 0.000015, roadLng + 0.000015];
   lanes.forEach((lng) => {
     [0.0, 0.33, 0.66].forEach((phaseOffset) => {
       seed += 17.7;
-      const speed = 0.05 + seededRandom(seed) * 0.015;
+      // Residential city-street driving pace, ~9-12 m/s (~20-27 mph).
+      const driveSpeedMs = 9 + seededRandom(seed) * 3;
       buildCar(
         arrays,
         [lng, PARK_SOUTH_LAT - 0.0015],
         [lng, PARK_NORTH_LAT + 0.0015],
         phaseOffset,
-        speed,
+        driveSpeedMs,
         seed
       );
     });
