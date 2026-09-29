@@ -1,20 +1,34 @@
 // ---------------------------------------------------------------------------
-// Park NPCs, built from assets/models/Crowd/crowd.glb (apelab). That file is
-// one static scene of 7 standing people in a row, each split into separate
-// head/torso/legs meshes, plus a ground plane and one stray head — so the
-// people are pulled apart by clustering their meshes by position, re-centred
-// on their feet, and cloned into individual characters. The model faces +X.
+// People on the map, built from assets/models/Crowd/crowd.glb (apelab): one
+// static scene of 7 standing people, each split into head/torso/legs meshes
+// (plus a ground plane and a stray head). They're pulled apart by clustering
+// meshes by position, re-centred on their feet, merged into one mesh each
+// (one draw call per person instead of ~13), and cloned. The model faces +X.
 //
-// No skeleton or animations, so walking is faked with a step bob and a small
-// side-to-side sway. Strollers follow real park footpaths (Mapbox Streets v8
-// footway geometry, simplified); the rest stand around in small groups.
+// Two kinds:
+//  - park regulars: strollers on the park's real footpaths, and groups
+//    standing on the lawns;
+//  - city walkers: a population kept around wherever you are (the rat, or the
+//    map center), walking only along real sidewalks, footways and crosswalks
+//    from city.js, which already has any stretch inside a building cut out.
+//    At the end of a path they carry on along a connecting one, or turn
+//    around at a dead end.
+// No skeleton or animations, so walking is a step bob and a small sway.
 //
-// Requires map.js and actors.js to have run first.
+// Talk: park groups hold conversations, everyone else says one-liners, and
+// when Washington (the rat) comes by, people stop to greet him and point him
+// to a real place to eat or an apartment building nearby, get scared, or chat.
+//
+// Requires map.js, actors.js, talk.js, city.js and rat.js to have run first.
 // ---------------------------------------------------------------------------
 const NPC_MODEL_URL = 'assets/models/Crowd/crowd.glb';
-const NPC_HEIGHT_M = 2.6; // a bit over life size so they read next to the (big) rat
+const NPC_HEIGHT_M = 2.6;            // a bit over life size so they read next to the (big) rat
 const NPC_WALK_SPEED_MPS = 1.6;
 const NPC_TURN_DEG_PER_SEC = 240;
+const CITY_NPC_COUNT = 18;           // walkers kept around you
+const CITY_NPC_SPAWN_M = [30, 250];  // how far from you new walkers appear
+const CITY_NPC_DESPAWN_M = 320;
+const NPC_ENCOUNTER_M = 10;          // how close the rat gets before someone reacts
 
 const NPC_STROLL_ROUTES = [
   // West promenade along 16th St
@@ -31,7 +45,7 @@ const NPC_STROLL_ROUTES = [
   [[-77.036174, 38.923048], [-77.035374, 38.923076]],
 ];
 
-// Standing groups on the lawns (spots checked clear of buildings and water).
+// Standing groups on the park lawns (spots checked clear of buildings and water).
 const NPC_GROUPS = [
   { center: [-77.0359, 38.9220], size: 3 },
   { center: [-77.0357, 38.9228], size: 2 },
@@ -40,6 +54,44 @@ const NPC_GROUPS = [
 
 const METERS_PER_DEG_LAT = 111320;
 const npcs = [];
+const npcMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 });
+let npcTemplates = [];
+let npcNextTemplate = 0;
+let npcNextMaintainAt = 0;
+let npcCityFilled = false;
+let npcNextChatAt = 0;
+let npcNextEncounterAt = 0;
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+// Bakes every mesh under `root` into one geometry in root's local space, with
+// each part's material color stored per vertex.
+function mergeIntoOneMesh(root) {
+  root.updateMatrixWorld(true);
+  const toRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const position = [], normal = [], color = [];
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(toRoot, o.matrixWorld));
+    if (!g.attributes.normal) g.computeVertexNormals();
+    const p = g.attributes.position, n = g.attributes.normal, c = o.material.color;
+    for (let i = 0; i < p.count; i++) {
+      position.push(p.getX(i), p.getY(i), p.getZ(i));
+      normal.push(n.getX(i), n.getY(i), n.getZ(i));
+      color.push(c.r, c.g, c.b);
+    }
+  });
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
+  merged.setAttribute('normal', new THREE.Float32BufferAttribute(normal, 3));
+  merged.setAttribute('color', new THREE.Float32BufferAttribute(color, 3));
+  const mesh = new THREE.Mesh(merged, npcMaterial);
+  mesh.frustumCulled = false;
+  return mesh;
+}
 
 // Splits the crowd scene into one template per person.
 function buildNpcTemplates(scene) {
@@ -75,48 +127,56 @@ function buildNpcTemplates(scene) {
         body.add(p.child);
       });
       body.scale.setScalar(NPC_HEIGHT_M / (box.max.y - box.min.y));
+      const merged = mergeIntoOneMesh(body);
+      body.remove(...body.children);
+      body.add(merged);
       const template = new THREE.Group();
       template.add(body);
-      template.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
       return template;
     });
 }
 
-// Polyline in local meters with cumulative distances, for ping-pong walking.
-function buildRoute(lngLats) {
-  const pts = lngLats.map(([lng, lat]) => ({ lng, lat }));
-  const cum = [0];
-  for (let i = 1; i < pts.length; i++) {
-    const a = actors.toLocal(pts[i - 1].lng, pts[i - 1].lat), b = actors.toLocal(pts[i].lng, pts[i].lat);
-    cum.push(cum[i - 1] + Math.hypot(b.x - a.x, b.z - a.z));
-  }
-  return { pts, cum, length: cum[cum.length - 1] };
-}
+// ---------------------------------------------------------------------------
+// Paths and spawning
+// ---------------------------------------------------------------------------
 
-// Position + compass bearing at distance d along the route.
-function routeAt(route, d) {
+// Position + compass bearing (of the segment, in path order) at distance d.
+function routeAt(line, d) {
   let i = 1;
-  while (i < route.cum.length - 1 && route.cum[i] < d) i++;
-  const a = route.pts[i - 1], b = route.pts[i];
-  const seg = route.cum[i] - route.cum[i - 1] || 1;
-  const t = Math.min(1, Math.max(0, (d - route.cum[i - 1]) / seg));
+  while (i < line.cum.length - 1 && line.cum[i] < d) i++;
+  const a = line.pts[i - 1], b = line.pts[i];
+  const seg = line.cum[i] - line.cum[i - 1] || 1;
+  const t = Math.min(1, Math.max(0, (d - line.cum[i - 1]) / seg));
   const cosLat = Math.cos((a.lat * Math.PI) / 180);
   const bearing = (Math.atan2((b.lng - a.lng) * cosLat, b.lat - a.lat) * 180) / Math.PI;
   return { lng: a.lng + (b.lng - a.lng) * t, lat: a.lat + (b.lat - a.lat) * t, bearing };
 }
 
-function spawnNpcs(templates) {
-  let n = 0;
-  const nextTemplate = () => templates[n++ % templates.length].clone(true);
+function bearingFromTo(aLng, aLat, bLng, bLat) {
+  const cosLat = Math.cos((aLat * Math.PI) / 180);
+  return (Math.atan2((bLng - aLng) * cosLat, bLat - aLat) * 180) / Math.PI;
+}
 
-  NPC_STROLL_ROUTES.forEach((lngLats, i) => {
-    const route = buildRoute(lngLats);
-    npcs.push({
-      kind: 'stroll', obj: nextTemplate(), route,
-      dist: route.length * ((i * 0.37) % 1), dir: i % 2 ? -1 : 1,
-      speed: NPC_WALK_SPEED_MPS * (0.85 + ((i * 0.53) % 0.3)),
-      phase: i * 1.7, facingDeg: 0, groundZ: 60, groundAt: -Infinity,
-    });
+function makeNpc(fields) {
+  const obj = npcTemplates[npcNextTemplate++ % npcTemplates.length].clone(true);
+  actors.scene.add(obj);
+  const npc = { obj, headHeight: NPC_HEIGHT_M + 0.35, groundZ: 60, groundAt: -Infinity, facingDeg: 0, phase: Math.random() * 10, ...fields };
+  npcs.push(npc);
+  return npc;
+}
+
+function removeNpc(index) {
+  const npc = npcs[index];
+  talk.cancel(npc);
+  actors.scene.remove(npc.obj);
+  npcs.splice(index, 1);
+}
+
+function spawnParkNpcs() {
+  NPC_STROLL_ROUTES.forEach((coords, i) => {
+    const line = cityMakeLine(coords);
+    const dist = line.length * ((i * 0.37) % 1);
+    makeNpc({ kind: 'stroll', line, dist, dir: i % 2 ? -1 : 1, speed: NPC_WALK_SPEED_MPS * (0.85 + ((i * 0.53) % 0.3)) });
   });
 
   NPC_GROUPS.forEach((g, gi) => {
@@ -126,38 +186,131 @@ function spawnNpcs(templates) {
       const lat = g.center[1] + (Math.cos(a) * radius) / METERS_PER_DEG_LAT;
       const lng = g.center[0] + (Math.sin(a) * radius) / (METERS_PER_DEG_LAT * Math.cos((g.center[1] * Math.PI) / 180));
       const faceCenter = ((a * 180) / Math.PI + 180) % 360; // turned in toward the group
-      npcs.push({
-        kind: 'stand', group: gi, obj: nextTemplate(), lng, lat,
-        facingDeg: faceCenter, phase: gi * 2 + k * 1.3, groundZ: 60, groundAt: -Infinity,
-      });
+      makeNpc({ kind: 'stand', group: gi, lng, lat, homeFacingDeg: faceCenter, facingDeg: faceCenter });
     }
   });
+}
 
-  npcs.forEach((npc) => actors.scene.add(npc.obj));
+function npcPointOnScreen(lng, lat) {
+  const { x, z } = actors.toLocal(lng, lat);
+  const p = actors.toScreen(x, actorGroundHeight(lng, lat, 60) + NPC_HEIGHT_M / 2, z);
+  const canvas = map.getCanvas();
+  return !!p && p.x > -40 && p.x < canvas.clientWidth + 40 && p.y > -40 && p.y < canvas.clientHeight + 40;
+}
+
+// Drops a walker at a random spot on a random walk path near you (longer
+// paths more likely). Returns false if no good spot turned up.
+function spawnCityWalker(allowOnScreen) {
+  const lines = city.walkLines.filter((l) => l.length >= 15);
+  if (!lines.length) return false;
+  const focus = city.focus();
+  const total = lines.reduce((sum, l) => sum + l.length, 0);
+  for (let attempt = 0; attempt < 12; attempt++) {
+    let r = Math.random() * total, line = lines[lines.length - 1];
+    for (const l of lines) { r -= l.length; if (r <= 0) { line = l; break; } }
+    const dist = Math.random() * line.length;
+    const at = routeAt(line, dist);
+    const away = cityMeters(focus, [at.lng, at.lat]);
+    if (away < CITY_NPC_SPAWN_M[0] || away > CITY_NPC_SPAWN_M[1]) continue;
+    if (!allowOnScreen && npcPointOnScreen(at.lng, at.lat)) continue;
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    makeNpc({
+      kind: 'walk', line, dist, dir, lng: at.lng, lat: at.lat,
+      speed: NPC_WALK_SPEED_MPS * (0.8 + Math.random() * 0.4),
+      facingDeg: dir > 0 ? at.bearing : at.bearing + 180,
+    });
+    return true;
+  }
+  return false;
+}
+
+// Keeps CITY_NPC_COUNT walkers around you: drops ones left far behind and
+// adds new ones — all at once the first time, then a few a second, placed
+// just off screen where possible so nobody pops in right in front of you.
+function maintainCityWalkers(t) {
+  if (t < npcNextMaintainAt || !npcTemplates.length) return;
+  npcNextMaintainAt = t + 1;
+  const focus = city.focus();
+  for (let i = npcs.length - 1; i >= 0; i--) {
+    if (npcs[i].kind === 'walk' && cityMeters(focus, [npcs[i].lng, npcs[i].lat]) > CITY_NPC_DESPAWN_M) removeNpc(i);
+  }
+  if (!city.walkLines.length || map.getZoom() < 15) return; // too far out to see anyone anyway
+  let walkers = npcs.filter((n) => n.kind === 'walk').length;
+  const budget = npcCityFilled ? 3 : CITY_NPC_COUNT;
+  for (let k = 0; k < budget && walkers < CITY_NPC_COUNT; k++) {
+    if (!spawnCityWalker(!npcCityFilled || walkers < CITY_NPC_COUNT / 2)) break;
+    walkers++;
+  }
+  if (walkers > 0) npcCityFilled = true;
+}
+
+// At the end of its path, a walker carries on along whichever connecting
+// path (sidewalk, crosswalk, footway…) doesn't send it straight back the way
+// it came; at a dead end it turns around.
+function continueWalk(npc) {
+  const endDist = npc.dist > npc.line.length ? npc.line.length : 0;
+  const end = routeAt(npc.line, endDist);
+  const heading = npc.dir > 0 ? end.bearing : end.bearing + 180;
+  const options = [];
+  city.walkLinesNear(end.lng, end.lat, 4).forEach((line) => {
+    if (line === npc.line) return;
+    const hit = city.nearestOnLine(line, end.lng, end.lat);
+    if (hit.off > 4) return;
+    [1, -1].forEach((dir) => {
+      const room = dir > 0 ? line.length - hit.along : hit.along;
+      if (room < 6) return;
+      const ahead = routeAt(line, hit.along + dir * 3);
+      const bearing = dir > 0 ? ahead.bearing : ahead.bearing + 180;
+      if (Math.abs(((bearing - heading + 540) % 360) - 180) < 150) options.push({ line, along: hit.along, dir });
+    });
+  });
+  if (options.length) {
+    const next = talk.pick(options);
+    npc.line = next.line;
+    npc.dist = next.along;
+    npc.dir = next.dir;
+  } else {
+    npc.dist = endDist;
+    npc.dir = -npc.dir;
+  }
 }
 
 function updateNpc(npc, dt, t) {
-  let bob = 0, sway = 0, facing = npc.facingDeg;
+  let bob = 0, sway = 0, targetFacing;
 
-  if (npc.kind === 'stroll') {
-    npc.dist += npc.dir * npc.speed * dt;
-    if (npc.dist > npc.route.length) { npc.dist = npc.route.length; npc.dir = -1; }
-    if (npc.dist < 0) { npc.dist = 0; npc.dir = 1; }
-    const at = routeAt(npc.route, npc.dist);
-    npc.lng = at.lng; npc.lat = at.lat;
-    const target = npc.dir > 0 ? at.bearing : at.bearing + 180;
-    const diff = ((target - npc.facingDeg + 540) % 360) - 180;
-    const maxTurn = NPC_TURN_DEG_PER_SEC * dt;
-    npc.facingDeg += Math.max(-maxTurn, Math.min(maxTurn, diff));
-    facing = npc.facingDeg;
-    const step = t * 2 * Math.PI * 1.8 + npc.phase;
-    bob = Math.abs(Math.sin(step)) * NPC_HEIGHT_M * 0.025;
-    sway = Math.sin(step) * 0.05;
-  } else {
-    // Standing: small weight shifts and glances around.
-    facing = npc.facingDeg + Math.sin(t * 0.6 + npc.phase) * 12;
+  if (t < (npc.pausedUntil || 0)) {
+    // Stopped to deal with the rat: turn to face him.
+    targetFacing = bearingFromTo(npc.lng, npc.lat, ratState.lng, ratState.lat);
+  } else if (npc.kind === 'stand') {
+    // Small weight shifts and glances around.
+    targetFacing = npc.homeFacingDeg + Math.sin(t * 0.6 + npc.phase) * 12;
     sway = Math.sin(t * 0.9 + npc.phase) * 0.02;
+  } else {
+    // Wait for a car that's in the way (not one that's waiting on them) —
+    // up to 8 s, in case it's stuck there.
+    const next = routeAt(npc.line, npc.dist + npc.dir * 1.5);
+    const blocked = typeof carBlocksPoint === 'function' && carBlocksPoint(next.lng, next.lat, npc);
+    npc.waitedFor = blocked ? (npc.waitedFor || 0) + dt : 0;
+    const walking = !blocked || npc.waitedFor > 8;
+    if (walking) npc.dist += npc.dir * npc.speed * dt;
+    if (npc.dist > npc.line.length || npc.dist < 0) {
+      if (npc.kind === 'walk') continueWalk(npc);
+      else { npc.dist = Math.min(npc.line.length, Math.max(0, npc.dist)); npc.dir = -npc.dir; }
+    }
+    const at = routeAt(npc.line, npc.dist);
+    npc.lng = at.lng;
+    npc.lat = at.lat;
+    targetFacing = npc.dir > 0 ? at.bearing : at.bearing + 180;
+    const step = t * 2 * Math.PI * 1.8 + npc.phase;
+    if (walking) {
+      bob = Math.abs(Math.sin(step)) * NPC_HEIGHT_M * 0.025;
+      sway = Math.sin(step) * 0.05;
+    }
   }
+
+  const diff = ((targetFacing - npc.facingDeg + 540) % 360) - 180;
+  const maxTurn = NPC_TURN_DEG_PER_SEC * dt;
+  npc.facingDeg += Math.max(-maxTurn, Math.min(maxTurn, diff));
 
   if (t - npc.groundAt > 0.4) {
     npc.groundZ = actorGroundHeight(npc.lng, npc.lat, npc.groundZ);
@@ -165,39 +318,13 @@ function updateNpc(npc, dt, t) {
   }
   const { x, z } = actors.toLocal(npc.lng, npc.lat);
   npc.obj.position.set(x, npc.groundZ + bob, z);
-  npc.obj.rotation.set(0, actors.yawForBearing(facing, '+x'), 0);
+  npc.obj.rotation.set(0, actors.yawForBearing(npc.facingDeg, '+x'), 0);
   npc.obj.children[0].rotation.x = sway; // rock side to side (model's x axis points forward)
 }
 
 // ---------------------------------------------------------------------------
-// Talk bubbles. Dialogue lives in npc-lines.json (plus the site's own
-// upcoming events and park facts) so it can be edited or regenerated without
-// touching code. Standing groups hold short back-and-forth conversations,
-// strollers say one-liners, and anyone the rat runs past reacts to it.
-// Bubbles are HTML over the map, positioned from the NPC's head each frame.
+// Talk
 // ---------------------------------------------------------------------------
-const NPC_LINES_URL = 'npc-lines.json';
-const NPC_MAX_BUBBLES = 3;
-const NPC_MIN_ONSCREEN_PX = 14; // no bubbles for NPCs drawn smaller than this
-const NPC_RAT_REACT_M = 14;
-const npcTalk = { lines: null, queue: [], active: [], recent: [], nextChatAt: 0, layer: document.getElementById('npc-talk-layer') };
-
-fetch(NPC_LINES_URL)
-  .then((r) => r.json())
-  .then((lines) => { npcTalk.lines = lines; })
-  .catch((err) => console.error('NPC lines failed to load:', err));
-
-function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-
-// Random pick that skips anything said recently, so lines don't repeat back to back.
-function pickFresh(arr) {
-  const fresh = arr.filter((x) => !npcTalk.recent.includes(x));
-  const choice = pickOne(fresh.length ? fresh : arr);
-  npcTalk.recent.push(choice);
-  if (npcTalk.recent.length > 8) npcTalk.recent.shift();
-  return choice;
-}
-
 function npcTimeOfDay() {
   const h = new Date().getHours();
   if (h >= 5 && h < 12) return 'morning';
@@ -211,142 +338,122 @@ function npcSeason() {
   return m >= 2 && m <= 4 ? 'spring' : m >= 5 && m <= 7 ? 'summer' : m >= 8 && m <= 10 ? 'fall' : 'winter';
 }
 
-function npcOneLiner() {
-  const L = npcTalk.lines;
+// Park regulars also talk about the park, its facts and the site's upcoming
+// events; city walkers stick to city talk.
+function npcOneLiner(npc) {
+  const L = talk.lines;
+  const inPark = npc.kind !== 'walk';
   const r = Math.random();
-  if (r < 0.1) {
+  if (inPark && r < 0.1) {
     const next = upcomingEvents()[0];
     if (next) {
       const when = new Date(next.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
       return `Are you going to ${next.name} on ${when}?`;
     }
-  } else if (r < 0.18) {
-    return 'Fun fact: ' + pickFresh(facts.filter((f) => f.length <= 130));
-  } else if (r < 0.33) {
-    return pickFresh(L.timeOfDay[npcTimeOfDay()]);
-  } else if (r < 0.45) {
-    return pickFresh(L.season[npcSeason()]);
   }
-  return pickFresh(L.lines);
+  if (inPark && r < 0.18) return 'Fun fact: ' + talk.pickFresh(facts.filter((f) => f.length <= 130));
+  if (r < 0.33) return talk.pickFresh(L.timeOfDay[npcTimeOfDay()]);
+  if (r < 0.45) return talk.pickFresh(L.season[npcSeason()]);
+  return talk.pickFresh(inPark && r < 0.75 ? L.park.lines : L.city.lines);
 }
 
-function npcTalkSeconds(text) {
-  return Math.min(7, Math.max(3, 2.2 + text.length * 0.05));
-}
-
-// Where an NPC's head is on screen, or null if it's off screen or too small.
-function npcHeadOnScreen(npc) {
-  const { x, y, z } = npc.obj.position;
-  const head = actors.toScreen(x, y + NPC_HEIGHT_M + 0.35, z);
-  const feet = actors.toScreen(x, y, z);
-  if (!head || !feet || feet.y - head.y < NPC_MIN_ONSCREEN_PX) return null;
-  const canvas = map.getCanvas();
-  if (head.x < 0 || head.x > canvas.clientWidth || head.y < 0 || feet.y > canvas.clientHeight) return null;
-  return head;
-}
-
-function npcIsTalking(npc) {
-  return npcTalk.active.some((b) => b.npc === npc) || npcTalk.queue.some((u) => u.npc === npc);
-}
-
-function npcShowBubble(npc, text, t, extraClass) {
-  npcTalk.active.filter((b) => b.npc === npc).forEach(npcHideBubble);
-  const el = document.createElement('div');
-  el.className = 'npc-talk' + (extraClass ? ' ' + extraClass : '');
-  el.textContent = text;
-  npcTalk.layer.appendChild(el);
-  npcTalk.active.push({ npc, el, until: t + npcTalkSeconds(text) });
-  npc.lastSpokeAt = t;
-}
-
-function npcHideBubble(bubble) {
-  npcTalk.active.splice(npcTalk.active.indexOf(bubble), 1);
-  bubble.el.classList.add('leaving');
-  setTimeout(() => bubble.el.remove(), 250);
-}
-
-function npcStartChatter(t) {
-  const busy = npcTalk.active.length + npcTalk.queue.length;
-  if (busy >= NPC_MAX_BUBBLES) return;
-  const candidates = npcs.filter((n) => !npcIsTalking(n) && t - (n.lastSpokeAt || -Infinity) > 8 && npcHeadOnScreen(n));
+// Ambient chatter: at most 3 bubbles going at once, only from people big
+// enough on screen to read.
+function startChatter(t) {
+  if (talk.count() >= 3) return;
+  const candidates = npcs.filter((n) =>
+    !talk.busy(n) && t - (n.lastSpokeAt || -Infinity) > 10 && t >= (n.pausedUntil || 0) && talk.headOnScreen(n));
   if (!candidates.length) return;
-  const speaker = pickOne(candidates);
-  const group = speaker.kind === 'stand' ? npcs.filter((n) => n.group === speaker.group && !npcIsTalking(n)) : [];
+  const speaker = talk.pick(candidates);
+  const group = speaker.kind === 'stand' ? npcs.filter((n) => n.group === speaker.group && !talk.busy(n)) : [];
 
   if (group.length >= 2) {
     // A short conversation, alternating between the group's members.
     const start = group.indexOf(speaker);
-    let at = t;
-    pickFresh(npcTalk.lines.conversations).forEach((text, i) => {
-      npcTalk.queue.push({ npc: group[(start + i) % group.length], text, at });
-      at += npcTalkSeconds(text) - 0.4;
+    let delay = 0;
+    talk.pickFresh(talk.lines.park.conversations).forEach((text, i) => {
+      talk.say(group[(start + i) % group.length], text, delay);
+      delay += talk.secondsFor(text) - 0.4;
     });
   } else {
-    npcTalk.queue.push({ npc: speaker, text: npcOneLiner(), at: t });
+    talk.say(speaker, npcOneLiner(speaker));
   }
 }
 
-function updateNpcTalk(t) {
-  if (!npcTalk.lines) return;
+// Someone spots Washington. Half the time they know him and point him to a
+// real place nearby — a food spot, or an apartment building ("highest rent,
+// so there's more to eat"); otherwise they're scared (anyone close by joins
+// in) or he starts the chat.
+function runEncounter(npc, t, rat) {
+  const L = talk.lines;
+  const food = city.placesNear(city.food, ratState.lng, ratState.lat, 500, 4);
+  const homes = city.placesNear(city.apartments, ratState.lng, ratState.lat, 450, 3);
+  talk.cancel(npc);
+  talk.cancel(ratSpeaker);
+  npc.lastEncounterAt = t;
+  const roll = Math.random();
 
-  if (t >= npcTalk.nextChatAt) {
-    npcStartChatter(t);
-    npcTalk.nextChatAt = t + 2.5 + Math.random() * 3;
-  }
-
-  // Anyone the running rat passes close to reacts straight away.
-  if (ratModeActive && ratState.moving) {
-    const rat = actors.toLocal(ratState.lng, ratState.lat);
-    npcs.forEach((npc) => {
-      const near = Math.hypot(npc.obj.position.x - rat.x, npc.obj.position.z - rat.z) < NPC_RAT_REACT_M;
-      if (near && t - (npc.lastReactAt || -Infinity) > 10) {
-        npc.lastReactAt = t;
-        npcTalk.queue = npcTalk.queue.filter((u) => u.npc !== npc);
-        npcShowBubble(npc, pickFresh(npcTalk.lines.ratReactions), t, 'rat-react');
-      }
+  if (roll < 0.5 && (food.length || homes.length)) {
+    const useHome = homes.length > 0 && (!food.length || Math.random() < 0.4);
+    const place = talk.pickFresh((useHome ? homes : food).map((p) => p.name));
+    const tip = talk.fill(talk.pickFresh(useHome ? L.people.suggestApartment : L.people.suggestFood), place);
+    talk.say(npc, talk.pickFresh(L.people.greetRat));
+    talk.say(ratSpeaker, talk.pickFresh(L.rat.askForFood), 1.8, 'rat');
+    talk.say(npc, tip, 3.9);
+    talk.say(ratSpeaker, talk.pickFresh(L.rat.thanks), 3.9 + talk.secondsFor(tip), 'rat');
+    npc.pausedUntil = t + 3.9 + talk.secondsFor(tip);
+  } else if (roll < 0.8) {
+    const bystanders = npcs
+      .filter((n) => n !== npc && Math.hypot(n.obj.position.x - rat.x, n.obj.position.z - rat.z) < NPC_ENCOUNTER_M * 1.5)
+      .slice(0, 2);
+    [npc, ...bystanders].forEach((n, i) => {
+      talk.cancel(n);
+      n.lastEncounterAt = t;
+      n.pausedUntil = t + 2.5;
+      talk.say(n, talk.pickFresh(L.people.scared), i * 0.4, 'scared');
     });
+    if (Math.random() < 0.6) talk.say(ratSpeaker, talk.pickFresh(L.rat.retort), 1.8, 'rat');
+  } else {
+    talk.say(ratSpeaker, talk.pickFresh(L.rat.greet), 0, 'rat');
+    talk.say(npc, talk.pickFresh(L.people.replyToGreet), 2);
+    npc.pausedUntil = t + 4.5;
   }
+}
 
-  npcTalk.queue = npcTalk.queue.filter((u) => {
-    if (u.at > t) return true;
-    npcShowBubble(u.npc, u.text, t);
-    return false;
+function updateEncounters(t) {
+  if (!ratModeActive || t < ratIntroUntil || t < npcNextEncounterAt) return;
+  const rat = actors.toLocal(ratState.lng, ratState.lat);
+  let nearest = null, best = NPC_ENCOUNTER_M;
+  npcs.forEach((n) => {
+    const d = Math.hypot(n.obj.position.x - rat.x, n.obj.position.z - rat.z);
+    if (d < best && t - (n.lastEncounterAt || -Infinity) > 45) { best = d; nearest = n; }
   });
-
-  npcTalk.active.slice().forEach((b) => { if (t > b.until) npcHideBubble(b); });
-
-  // Place bubbles over heads, stacking any that would overlap (people in a
-  // group stand close together, so their bubbles would otherwise pile up).
-  const placed = [];
-  npcTalk.active
-    .map((b) => ({ b, head: npcHeadOnScreen(b.npc) }))
-    .sort((p, q) => (q.head ? q.head.y : 0) - (p.head ? p.head.y : 0)) // lowest on screen first
-    .forEach(({ b, head }) => {
-      b.el.style.display = head ? '' : 'none';
-      if (!head) return;
-      const w = b.el.offsetWidth, h = b.el.offsetHeight + 6; // + speech tail
-      let bottom = head.y;
-      for (let moved = true; moved;) {
-        moved = false;
-        for (const p of placed) {
-          const overlapX = head.x - w / 2 < p.right && head.x + w / 2 > p.left;
-          if (overlapX && bottom > p.top && bottom - h < p.bottom) { bottom = p.top - 2; moved = true; }
-        }
-      }
-      placed.push({ left: head.x - w / 2, right: head.x + w / 2, top: bottom - h, bottom });
-      b.el.style.transform = `translate(${head.x}px, ${bottom}px) translate(-50%, -100%)`;
-    });
+  if (!nearest) return;
+  npcNextEncounterAt = t + 8;
+  runEncounter(nearest, t, rat);
 }
 
+// ---------------------------------------------------------------------------
+// Load + per frame
+// ---------------------------------------------------------------------------
 new THREE.GLTFLoader().load(
   NPC_MODEL_URL,
-  (gltf) => spawnNpcs(buildNpcTemplates(gltf.scene)),
+  (gltf) => {
+    npcTemplates = buildNpcTemplates(gltf.scene);
+    spawnParkNpcs();
+  },
   undefined,
   (err) => console.error('NPC crowd model failed to load:', err)
 );
 
 actors.onFrame((dt, now) => {
   const t = now / 1000;
+  maintainCityWalkers(t);
   npcs.forEach((npc) => updateNpc(npc, dt, t));
-  updateNpcTalk(t);
+  if (!talk.lines) return;
+  if (t >= npcNextChatAt) {
+    startChatter(t);
+    npcNextChatAt = t + 2.5 + Math.random() * 3;
+  }
+  updateEncounters(t);
 });

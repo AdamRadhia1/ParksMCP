@@ -1,0 +1,199 @@
+{
+  "park": {
+    "lines": [
+      "Everybody calls it Malcolm X Park. Nobody I know says Meridian Hill.",
+      "Those cascade steps count as leg day, right?",
+      "Best view in the city is from the top terrace.",
+      "Go-go on the speaker, sun on the steps. Perfect.",
+      "This is the only place in the city I can hear myself think."
+    ],
+    "conversations": [
+      ["You coming to the drum circle Sunday?", "Wouldn't miss it. Been going since I was a kid."],
+      ["Is it Meridian Hill Park or Malcolm X Park?", "Depends who you ask. Around here? Malcolm X."],
+      ["The fountain's running again!", "Finally. It looks amazing."],
+      ["Pupusas after this?", "Only if we hit the spot in Mount Pleasant."],
+      ["How long have you lived in the neighborhood?", "Long enough to remember when this park wasn't this nice."],
+      ["Did you know John Quincy Adams lived up on this hill?", "Wait, the president? Here?", "After the White House, yeah. It's on the park signs."],
+      ["Your dog is so cute. What's his name?", "Mumbo. Like the sauce."],
+      ["Tourists never find this place.", "Good. Let's keep it that way."],
+      ["Bring a blanket next time, the lawn's perfect for a picnic.", "And snacks. Lots of snacks."]
+    ]
+  },
+
+  "city": {
+    "lines": [
+      "Half-smoke at Ben's after this? I'm starving.",
+      "Mumbo sauce on the wings. Non-negotiable.",
+      "I'm walking up to Adams Morgan after this. You in?",
+      "Columbia Heights or U Street for dinner?",
+      "Ten years in DC and the traffic circles still get me.",
+      "Rock Creek this weekend? I need a trail day.",
+      "Red Line or the bus home? Honestly, I'm walking.",
+      "¿Vamos por pupusas después?",
+      "Ethiopian on 9th Street later?",
+      "My cousin in Virginia swears Arlington has better parks. She's wrong.",
+      "These scooters are going to take me out one day.",
+      "Every block in this city has a better brunch spot than the last."
+    ]
+  },
+
+  "timeOfDay": {
+    "morning": ["Coffee first, then I'm a person.", "Morning run done. I earned a breakfast sandwich.", "Early mornings here are so quiet."],
+    "afternoon": ["Perfect afternoon to do absolutely nothing.", "Lunch break outside beats my desk any day."],
+    "evening": ["Golden hour. Somebody take my picture.", "Happy hour on 14th after this?"],
+    "night": ["Park closes soon, we should head out.", "The city lights look so good tonight."]
+  },
+
+  "season": {
+    "spring": ["Cherry blossom season always sneaks up on me.", "Spring in DC hits different."],
+    "summer": ["It's so humid I'm melting.", "Welcome to the swamp. Stay hydrated."],
+    "fall": ["Fall in this city is my favorite. The trees look unreal.", "Sweater weather, finally."],
+    "winter": ["It's freezing. Why did I leave the house?", "If it snows, Meridian Hill is the best sledding in the city."]
+  },
+
+  "rat": {
+    "intro": [
+      "Hi, my name is Washington, the DC city rat.",
+      "The people love me out here and feed me all the time.",
+      "Let's take a walk around the city together and grab some food!"
+    ],
+    "chatter": [
+      "Stick with me. I know every shortcut in this city.",
+      "Watch out for bikes. They don't stop for rats.",
+      "Everybody on this block knows me.",
+      "If you see a pizza crust, it's mine.",
+      "Rush hour is the best hour. Somebody always drops something.",
+      "I've been in this city longer than half these buildings.",
+      "Smell that? Somebody's grilling."
+    ],
+    "inPark": [
+      "Malcolm X Park! My favorite spot in the whole city.",
+      "Drum circle on Sundays means snacks on Sundays."
+    ],
+    "nearFood": [
+      "Smell that? {place} is right around here.",
+      "{place}. Now we're talking.",
+      "Ooh, {place}. I could eat."
+    ],
+    "nearApartment": [
+      "That's {place}. Highest rent around, so there's more to eat.",
+      "{place}. Fancy rent, fancy snacks."
+    ],
+    "askForFood": ["Hey! Know a good spot to eat around here?", "Hey friend, where's the good food at?"],
+    "thanks": ["Say less. Let's go!", "You're the best!", "Ooh, noted. Let's roll."],
+    "greet": ["Hey! Got any snacks?", "Nice day for a walk, huh?", "Hi! Love your shoes."],
+    "retort": ["Rude.", "Relax, I'm a local.", "I live here too, you know.", "I've been called worse."],
+    "carRetort": [
+      "Eyes on the road!",
+      "Rats have the right of way. Look it up.",
+      "Nice ride. Got any snacks in there?",
+      "Beep beep yourself.",
+      "I was here first."
+    ]
+  },
+
+  "cars": {
+    "gossip": [
+      "They say DC's the rattiest city in America now. Can confirm.",
+      "The city's rat blitz started in Adams Morgan. They missed a few.",
+      "Over 500 traffic cameras in this city. Drive like your grandma's watching.",
+      "Malcolm X Park's fountains are running again. Seven years dry!",
+      "Mumbo sauce on everything. That's the DC way.",
+      "Go-go is the official music of DC. Turn it up.",
+      "Half-smoke at Ben's or a jumbo slice in Adams Morgan? Tough call.",
+      { "text": "Commanders finally got a win. Beat Seattle in the rain!", "until": "2026-10-03" },
+      { "text": "Nats finished 77 and 85. Eleven more wins than last year!", "until": "2026-11-15" },
+      { "text": "Caps home opener is October 7th. Penguins. I'm already yelling.", "until": "2026-10-07" },
+      { "text": "Snallygaster's on Pennsylvania Ave October 10th. Somebody else is driving.", "until": "2026-10-10" },
+      { "text": "Marine Corps Marathon is October 25th. Plan your detours now.", "until": "2026-10-25" },
+      { "text": "RFK stadium plan just went to the Council. They're saying it opens in 2030.", "until": "2026-12-31" },
+      { "text": "The African American history museum just turned ten. So much purple downtown!", "until": "2026-10-31" },
+      { "text": "Fiesta DC was packed this weekend.", "until": "2026-10-04" },
+      { "text": "That nor'easter had me in a jacket in September.", "until": "2026-10-12" },
+      { "text": "Metro's new station signs are out. Everybody's got opinions about the font.", "until": "2026-12-31" },
+      { "text": "Red Line runs to Bethesda again. The summer shutdown is over!", "until": "2026-10-31" },
+      { "text": "Upper lawn at Malcolm X Park finally reopened. Picnic season's back.", "until": "2026-11-15" },
+      { "text": "Maryland might start blocking registrations over unpaid DC camera tickets. Yikes.", "until": "2026-12-31" },
+      { "text": "Mayor's race is all anybody on my block talks about.", "until": "2026-11-03" },
+      { "text": "CARLA just opened on 18th Street. Adams Morgan parking's about to get worse.", "until": "2026-11-30" }
+    ],
+    "driving": [
+      "Four times around Dupont Circle. I'm not lost, I'm sightseeing.",
+      "Every traffic circle in this city is a personality test.",
+      "Motorcade again? I'm going to be late for everything.",
+      "Maryland tags. Of course.",
+      "Virginia plates doing 40 in the left lane. Classic.",
+      "Street sweeping tomorrow. Do NOT forget to move the car.",
+      "Found parking in Adams Morgan on the first try. Somebody write that down.",
+      "Where did that scooter come from?!",
+      "Rock Creek Parkway goes one-way at rush hour and I still forget.",
+      "GPS says four minutes. GPS is a liar.",
+      "Go-go on the radio, windows down. Perfect.",
+      "There's a bike lane there now? Since when?",
+      "Third parking ticket this month. I'm basically funding the city.",
+      "Beltway at five? No thanks. Side streets all the way.",
+      "Stay out of the bus lane on 16th. Those cameras don't blink."
+    ],
+    "traffic": [
+      "{place} is a parking lot right now.",
+      "Why is {place} always like this?",
+      "I could walk down {place} faster than this.",
+      "Every car in DC is on {place} right now.",
+      "Of course {place} is backed up. It's a day ending in Y."
+    ],
+    "stuck": ["Come on, it was green a second ago!", "Honk if you're also running late.", "This light is taking forever."],
+    "doublePark": ["Two minutes, tops!", "Hazards on. Totally legal.", "Just one more drop-off!"],
+    "doubleParked": ["Double-parked. Of course.", "Every. Single. Block.", "Hazards on doesn't make it a parking spot!"],
+    "byType": {
+      "taxi": ["Where to? Hop in.", "Airport run? National beats Dulles, trust me.", "Union Station? Ten minutes, if the lights like us."],
+      "police": ["Slow it down, folks.", "Keep it moving, people."],
+      "delivery": ["Forty more packages. Rain or shine.", "If nobody's home, it's going to the neighbor."],
+      "delivery-flat": ["Forty more packages. Rain or shine.", "If nobody's home, it's going to the neighbor."],
+      "garbage-truck": ["Trash day! Lids on the cans, people.", "Rat-proof bins, folks. They're watching."],
+      "ambulance": ["Coming through!", "Clear the lane, please!"],
+      "firetruck": ["Coming through!", "Clear the lane, please!"],
+      "truck": ["Moving day in Columbia Heights. Again.", "Somebody always needs help moving a couch."],
+      "truck-flat": ["Moving day in Columbia Heights. Again.", "Somebody always needs help moving a couch."],
+      "van": ["Soccer practice drop-off. Wish me luck.", "Snacks are in the back. Don't touch them."]
+    },
+    "shocked": [
+      "IS THAT A RAT?!",
+      "Roll the windows up. Now.",
+      "That rat just cut me off!",
+      "Nope. Taking the Metro tomorrow.",
+      "The rat blitz missed one. A BIG one.",
+      "Did that rat just jaywalk?!",
+      "I swear that rat just looked me in the eye.",
+      "That's not a rat, that's a small horse.",
+      "Rattiest city in America, and there's the proof.",
+      "Only in DC."
+    ],
+    "bystander": ["Did you see that rat?!", "Lock your doors, everybody.", "Somebody call 311!"],
+    "ratBlocking": ["Move it, rat!", "Is that rat directing traffic now?", "Rat jam on {place}. Great.", "Beep beep! Rat in the road!"],
+    "yieldToPeople": ["Go ahead!", "After you.", "You're good, go on."],
+    "peopleThanks": ["Thanks!", "Appreciate you!", "Thank you!"]
+  },
+
+  "people": {
+    "greetRat": ["Washington! Hey buddy!", "Hey Washington! Hungry?", "Look who it is!"],
+    "suggestFood": [
+      "Hungry? Try {place}, it's right around the corner.",
+      "Go check out {place}. Trust me.",
+      "You'd love {place}. Best in the neighborhood."
+    ],
+    "suggestApartment": [
+      "Try {place}. The rent there is the highest, so there's more to eat.",
+      "Head over to {place}. Highest rent around means more to eat."
+    ],
+    "replyToGreet": ["Aww, hi Washington!", "Sorry buddy, all out.", "Ha! Here, have a chip."],
+    "scared": [
+      "Is that a RAT?!",
+      "That rat is HUGE.",
+      "Nope. Nope nope nope.",
+      "Only in DC.",
+      "Did that rat just run past me?",
+      "Somebody call 311!",
+      "Twenty years in this city and that's the biggest rat I've ever seen."
+    ]
+  }
+}

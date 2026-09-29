@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // Shared three.js scene for every 3D character on the map (the rat, the
-// NPCs), drawn as ONE Mapbox custom layer with one renderer on Mapbox's GL
+// NPCs, the cars), drawn as ONE Mapbox custom layer with one renderer on Mapbox's GL
 // context. Objects live in a local frame anchored at map.js's `origin`:
 //   x = meters east, y = meters up, z = meters south
 // so modules just set obj.position / obj.rotation.y in plain meters instead
@@ -16,12 +16,21 @@
 const actors = {
   scene: new THREE.Scene(),
   frameCallbacks: [],
+  lateFrameCallbacks: [],
   onFrame(fn) { this.frameCallbacks.push(fn); },
+  // Runs after every onFrame callback, i.e. once everything has moved.
+  onLateFrame(fn) { this.lateFrameCallbacks.push(fn); },
 
   // lng/lat -> local { x (east m), z (south m) }
   toLocal(lng, lat) {
     const [x, z] = toLocalMeters(lng, lat);
     return { x, z };
+  },
+
+  // local x/z -> [lng, lat]
+  toLngLat(x, z) {
+    const ll = new mapboxgl.MercatorCoordinate(origin.x + x * meterScale, origin.y + z * meterScale, 0).toLngLat();
+    return [ll.lng, ll.lat];
   },
 
   // three.js yaw for an object whose model faces `forward` ('+x' or '+z'),
@@ -120,6 +129,7 @@ function addActorsLayer() {
 
       syncActorLightsToSun();
       actors.frameCallbacks.forEach((fn) => fn(dt, now));
+      actors.lateFrameCallbacks.forEach((fn) => fn(dt, now));
 
       this.renderer.resetState();
 

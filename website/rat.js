@@ -84,6 +84,8 @@ function exitRatMode() {
   ratState.moving = false;
   setRatRunSound(false);
   map.keyboard.enable();
+  talk.cancel(ratSpeaker);
+  ratIntroUntil = 0;
   updateRatHint();
 }
 
@@ -96,6 +98,12 @@ function enterRatMode() {
   ratState.targetFacingDeg = ratState.facingDeg = map.getBearing();
   updateRatHint();
   enterRatCam();
+  if (!ratIntroduced) {
+    ratIntroduced = true;
+    ratIntroStartAt = performance.now() / 1000 + 1; // once the camera has swung in
+  } else {
+    ratNextChatterAt = performance.now() / 1000 + 8;
+  }
 }
 
 document.getElementById('rat-mode-toggle')?.addEventListener('click', enterRatMode);
@@ -140,81 +148,23 @@ function setRatRunSound(running) {
 }
 
 // ---------------------------------------------------------------------------
-// Building collision — real footprints from Mapbox Streets v8 (the same data
-// Mapbox Standard extrudes its buildings from), loaded through an invisible
-// fill layer so querySourceFeatures can read them. Standard's own layers sit
-// inside a sealed style import and can't be queried directly.
+// Collision: buildings (footprints from city.js), and anything else that
+// adds itself to ratBlockers (cars.js adds the cars).
 // ---------------------------------------------------------------------------
-const RAT_COLLISION_SOURCE = 'rat-collision-buildings';
-const RAT_NOSE_M = 2.8;           // head is this far ahead of the rat's origin
-const RAT_COLLISION_RADIUS_M = 90; // only keep footprints this close
-let ratNearbyBuildings = [];
-let ratBuildingsRefreshedAt = -Infinity;
-let ratBuildingsCenter = null;
+const RAT_NOSE_M = 2.8; // head is this far ahead of the rat's origin
+const ratBlockers = [(lng, lat) => city.pointInBuilding(lng, lat)];
 
-function addRatCollisionSource() {
-  if (map.getSource(RAT_COLLISION_SOURCE)) return;
-  map.addSource(RAT_COLLISION_SOURCE, { type: 'vector', url: 'mapbox://mapbox.mapbox-streets-v8' });
-  map.addLayer({
-    id: 'rat-collision-buildings',
-    type: 'fill',
-    source: RAT_COLLISION_SOURCE,
-    'source-layer': 'building',
-    paint: { 'fill-opacity': 0 },
-  });
-}
-
-function ringContains(ring, lng, lat) {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i], [xj, yj] = ring[j];
-    if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-function refreshRatNearbyBuildings(now) {
-  const movedFar = !ratBuildingsCenter ||
-    Math.abs(ratState.lat - ratBuildingsCenter[1]) * RAT_METERS_PER_DEG_LAT > 25 ||
-    Math.abs(ratState.lng - ratBuildingsCenter[0]) * ratMetersPerDegLngAt(ratState.lat) > 25;
-  if (!movedFar && now - ratBuildingsRefreshedAt < 1000) return;
-  if (!map.getSource(RAT_COLLISION_SOURCE)) return;
-  ratBuildingsRefreshedAt = now;
-  ratBuildingsCenter = [ratState.lng, ratState.lat];
-
-  const dLat = RAT_COLLISION_RADIUS_M / RAT_METERS_PER_DEG_LAT;
-  const dLng = RAT_COLLISION_RADIUS_M / ratMetersPerDegLngAt(ratState.lat);
-  const box = [ratState.lng - dLng, ratState.lat - dLat, ratState.lng + dLng, ratState.lat + dLat];
-  const found = [];
-  map.querySourceFeatures(RAT_COLLISION_SOURCE, { sourceLayer: 'building' }).forEach((f) => {
-    if (f.properties.underground === 'true') return;
-    const g = f.geometry;
-    const polygons = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
-    polygons.forEach((rings) => {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      rings[0].forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); });
-      if (maxX < box[0] || minX > box[2] || maxY < box[1] || minY > box[3]) return;
-      found.push({ bbox: [minX, minY, maxX, maxY], rings });
-    });
-  });
-  ratNearbyBuildings = found;
-}
-
-function ratPointInBuilding(lng, lat) {
-  return ratNearbyBuildings.some(({ bbox, rings }) =>
-    lng >= bbox[0] && lng <= bbox[2] && lat >= bbox[1] && lat <= bbox[3] &&
-    ringContains(rings[0], lng, lat) &&
-    !rings.slice(1).some((hole) => ringContains(hole, lng, lat)) // courtyards
-  );
+function ratBlockedAt(lng, lat) {
+  return ratBlockers.some((blocks) => blocks(lng, lat));
 }
 
 // Moves the rat by (dEast, dNorth) meters unless that would put its body or
-// nose inside a building. If the full move is blocked, tries each axis on
-// its own so the rat slides along walls instead of sticking to them. If it
-// somehow already starts inside a footprint, it's let out freely.
+// nose inside a building or a car. If the full move is blocked, tries each
+// axis on its own so the rat slides along walls instead of sticking to them.
+// If it somehow already starts inside one, it's let out freely.
 function ratTryMove(dEast, dNorth) {
   const mLng = ratMetersPerDegLngAt(ratState.lat);
-  const startsInside = ratPointInBuilding(ratState.lng, ratState.lat);
+  const startsInside = ratBlockedAt(ratState.lng, ratState.lat);
   const attempts = [[dEast, dNorth], [dEast, 0], [0, dNorth]];
   for (const [de, dn] of attempts) {
     if (!de && !dn) continue;
@@ -223,7 +173,7 @@ function ratTryMove(dEast, dNorth) {
     const len = Math.hypot(de, dn);
     const noseLng = lng + (de / len) * RAT_NOSE_M / mLng;
     const noseLat = lat + (dn / len) * RAT_NOSE_M / RAT_METERS_PER_DEG_LAT;
-    const blocked = !startsInside && (ratPointInBuilding(lng, lat) || ratPointInBuilding(noseLng, noseLat));
+    const blocked = !startsInside && (ratBlockedAt(lng, lat) || ratBlockedAt(noseLng, noseLat));
     if (!blocked) {
       ratState.lng = lng;
       ratState.lat = lat;
@@ -258,7 +208,6 @@ let ratLastTime = null;
 function ratMoveLoop(now) {
   const dt = ratLastTime === null ? 0 : Math.min(0.1, (now - ratLastTime) / 1000);
   ratLastTime = now;
-  refreshRatNearbyBuildings(now);
 
   let fwd = 0, right = 0;
   if (ratModeActive) {
@@ -290,8 +239,60 @@ function ratMoveLoop(now) {
   ratState.facingDeg += Math.max(-maxTurn, Math.min(maxTurn, diff));
 
   ratState.groundZ = actorGroundHeight(ratState.lng, ratState.lat, ratState.groundZ);
-  if (ratModeActive) followRat();
+  if (ratModeActive) {
+    followRat();
+    ratSpeak(now / 1000);
+  }
   requestAnimationFrame(ratMoveLoop);
+}
+
+// ---------------------------------------------------------------------------
+// Washington talks: introduces himself the first time you become the rat
+// (once per visit), then comments on where you are — nearby food spots and
+// apartment buildings from city.js, the park, or general rat wisdom. His
+// back-and-forth with NPCs lives in npcs.js.
+// ---------------------------------------------------------------------------
+const RAT_PARK_BOUNDS = [-77.0364, 38.9192, -77.0348, 38.9233]; // Meridian Hill Park, from the map's park polygon
+let ratIntroduced = false;
+let ratIntroStartAt = null;
+let ratIntroUntil = 0;   // NPC encounters and chatter wait until the intro is done
+let ratNextChatterAt = 0;
+
+function ratInPark() {
+  const [w, s, e, n] = RAT_PARK_BOUNDS;
+  return ratState.lng > w && ratState.lng < e && ratState.lat > s && ratState.lat < n;
+}
+
+function ratSpeak(t) {
+  if (!talk.lines) return;
+  const L = talk.lines.rat;
+
+  if (ratIntroStartAt !== null) {
+    if (t < ratIntroStartAt) return; // intro's about to start; nothing else first
+    let delay = 0;
+    L.intro.forEach((line) => {
+      talk.say(ratSpeaker, line, delay, 'rat');
+      delay += talk.secondsFor(line) + 0.2;
+    });
+    ratIntroStartAt = null;
+    ratIntroUntil = t + delay;
+    ratNextChatterAt = ratIntroUntil + 10;
+    return;
+  }
+
+  if (t < ratIntroUntil || t < ratNextChatterAt || talk.busy(ratSpeaker)) return;
+  ratNextChatterAt = t + 16 + Math.random() * 10;
+  // Places he hasn't mentioned lately, so he doesn't keep naming the same one.
+  const unmentioned = (places) => places.map((p) => p.name).filter((name) => !talk.recent.includes(name));
+  const food = unmentioned(city.placesNear(city.food, ratState.lng, ratState.lat, 150, 3));
+  const homes = unmentioned(city.placesNear(city.apartments, ratState.lng, ratState.lat, 120, 2));
+  const r = Math.random();
+  let line;
+  if (food.length && r < 0.45) line = talk.fill(talk.pickFresh(L.nearFood), talk.pickFresh(food));
+  else if (homes.length && r < 0.6) line = talk.fill(talk.pickFresh(L.nearApartment), talk.pickFresh(homes));
+  else if (ratInPark() && r < 0.75) line = talk.pickFresh(L.inPark);
+  else line = talk.pickFresh(L.chatter);
+  talk.say(ratSpeaker, line, 0, 'rat');
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +309,8 @@ const RAT_ANIM_NAMES = { idle: 'RatArmature|Rat_Idle', run: 'RatArmature|Rat_Run
 const ratRoot = new THREE.Group();
 ratRoot.scale.setScalar(RAT_MODEL_SCALE);
 actors.scene.add(ratRoot);
+// Washington's speech bubbles anchor just above his head, and always show.
+const ratSpeaker = { obj: ratRoot, headHeight: 2.6, minPx: 0 };
 
 const ratAnim = { mixer: null, actions: {}, current: null };
 
@@ -353,7 +356,4 @@ actors.onFrame((dt) => {
 
 updateRatHint();
 
-whenTerrainReady(() => {
-  addRatCollisionSource();
-  requestAnimationFrame(ratMoveLoop);
-});
+whenTerrainReady(() => requestAnimationFrame(ratMoveLoop));

@@ -28,15 +28,15 @@ h1, h2, h3, strong { font-family: var(--font-head); font-weight: normal; }
 }
 #rat-hint strong { color: #fff; letter-spacing: 0.5px; }
 
-/* NPC talk bubbles — positioned over each NPC's head by npcs.js */
-#npc-talk-layer {
+/* Speech bubbles — positioned over each speaker's head by talk.js */
+#talk-layer {
   position: absolute;
   inset: 0;
   z-index: 1;
   overflow: hidden;
   pointer-events: none;
 }
-.npc-talk {
+.talk {
   position: absolute;
   left: 0;
   top: 0;
@@ -51,9 +51,9 @@ h1, h2, h3, strong { font-family: var(--font-head); font-weight: normal; }
   line-height: 1.3;
   text-align: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  animation: npcTalkIn 0.25s ease-out;
+  animation: talkIn 0.25s ease-out;
 }
-.npc-talk::after {
+.talk::after {
   content: '';
   position: absolute;
   left: 50%;
@@ -62,10 +62,22 @@ h1, h2, h3, strong { font-family: var(--font-head); font-weight: normal; }
   border: 6px solid transparent;
   border-top-color: #fff;
 }
-.npc-talk.rat-react { background: #ffd27a; }
-.npc-talk.rat-react::after { border-top-color: #ffd27a; }
-.npc-talk.leaving { opacity: 0; transition: opacity 0.25s; }
-@keyframes npcTalkIn { from { opacity: 0; } to { opacity: 1; } }
+/* People (and drivers) startled by the rat */
+.talk.scared { background: #ffd27a; }
+.talk.scared::after { border-top-color: #ffd27a; }
+/* Drivers */
+.talk.car { background: #d9ecff; }
+.talk.car::after { border-top-color: #d9ecff; }
+/* Washington, the rat */
+.talk.rat {
+  max-width: 220px;
+  background: #16140f;
+  color: #fff;
+  border: 2px solid var(--accent);
+}
+.talk.rat::after { border-top-color: var(--accent); }
+.talk.leaving { opacity: 0; transition: opacity 0.25s; }
+@keyframes talkIn { from { opacity: 0; } to { opacity: 1; } }
 
 #header {
   position: absolute;
