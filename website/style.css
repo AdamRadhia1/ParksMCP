@@ -273,7 +273,7 @@ body.walking #drag-mode-toggle { display: block; }
   z-index: 3;
   width: 300px;
   max-width: 80vw;
-  max-height: calc(100vh - 260px);
+  max-height: calc(100vh - 330px); /* stops above the "Did You Know?" panel; long directions scroll */
   overflow-y: auto;
   background: #000;
   border-radius: 10px;
@@ -324,11 +324,36 @@ body.walking #drag-mode-toggle { display: block; }
 #dir-modes button { flex: 1; padding: 6px 0; font-size: 12px; }
 #dir-modes button.active { border-color: var(--accent); background: rgba(201, 154, 58, 0.25); }
 #dir-result { margin-top: 10px; font-size: 13px; line-height: 1.5; }
+#dir-result .dir-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #dir-result .summary { font-size: 15px; }
+/* Ties the text to the map: a swatch of the red route line */
+#dir-result .dir-note { margin: 6px 0 0; font-size: 12px; line-height: 1.45; }
+#dir-result .dir-note::before {
+  content: '';
+  display: inline-block;
+  width: 18px;
+  height: 5px;
+  margin-right: 7px;
+  vertical-align: middle;
+  border-radius: 3px;
+  background: #e3242b;
+  box-shadow: 0 0 0 2px #fff;
+}
+#dir-result p { margin: 6px 0 0; }
 #dir-result ol { margin: 8px 0; padding-left: 20px; font-size: 12px; }
 #dir-result li { padding: 2px 0; }
 #dir-result a { color: var(--accent); }
-#dir-clear { padding: 5px 10px; font-size: 12px; margin-top: 4px; }
+#dir-clear { padding: 5px 10px; font-size: 12px; flex-shrink: 0; }
+
+/* Where a route starts (the red pin marks the park) */
+.route-start {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 4px solid #e3242b;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45);
+}
 
 body.walking #directions { display: none; }
 
