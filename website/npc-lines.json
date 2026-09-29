@@ -1,0 +1,51 @@
+{
+  "lines": [
+    "Everybody calls it Malcolm X Park. Nobody I know says Meridian Hill.",
+    "Half-smoke at Ben's after this? I'm starving.",
+    "Mumbo sauce on the wings. Non-negotiable.",
+    "Those cascade steps count as leg day, right?",
+    "Best view in the city is from the top terrace.",
+    "I'm walking up to Adams Morgan after this. You in?",
+    "Columbia Heights or U Street for dinner?",
+    "Go-go on the speaker, sun on the steps. Perfect.",
+    "Ten years in DC and the traffic circles still get me.",
+    "Rock Creek this weekend? I need a trail day.",
+    "Red Line or the bus home? Honestly, I'm walking.",
+    "¿Vamos por pupusas después?",
+    "Ethiopian on 9th Street later?",
+    "This is the only place in the city I can hear myself think.",
+    "My cousin in Virginia swears Arlington has better parks. She's wrong."
+  ],
+  "conversations": [
+    ["You coming to the drum circle Sunday?", "Wouldn't miss it. Been going since I was a kid."],
+    ["Is it Meridian Hill Park or Malcolm X Park?", "Depends who you ask. Around here? Malcolm X."],
+    ["The fountain's running again!", "Finally. It looks amazing."],
+    ["Pupusas after this?", "Only if we hit the spot in Mount Pleasant."],
+    ["How long have you lived in the neighborhood?", "Long enough to remember when this park wasn't this nice."],
+    ["Did you know John Quincy Adams lived up on this hill?", "Wait, the president? Here?", "After the White House, yeah. It's on the park signs."],
+    ["Your dog is so cute. What's his name?", "Mumbo. Like the sauce."],
+    ["Tourists never find this place.", "Good. Let's keep it that way."],
+    ["Bring a blanket next time, the lawn's perfect for a picnic.", "And snacks. Lots of snacks."]
+  ],
+  "timeOfDay": {
+    "morning": ["Coffee first, then I'm a person.", "Morning run done. I earned a breakfast sandwich.", "Early mornings here are so quiet."],
+    "afternoon": ["Perfect afternoon to do absolutely nothing.", "Lunch break in the park beats my desk any day."],
+    "evening": ["Golden hour on the terrace. Somebody take my picture.", "Happy hour on 14th after this?"],
+    "night": ["Park closes soon, we should head out.", "The city lights look so good from up here."]
+  },
+  "season": {
+    "spring": ["Cherry blossom season always sneaks up on me.", "Spring in DC hits different."],
+    "summer": ["It's so humid I'm melting.", "Welcome to the swamp. Stay hydrated."],
+    "fall": ["Fall in this park is my favorite. The trees look unreal.", "Sweater weather, finally."],
+    "winter": ["It's freezing. Why did I leave the house?", "If it snows, this hill is the best sledding in the city."]
+  },
+  "ratReactions": [
+    "Is that a RAT?!",
+    "That rat is HUGE.",
+    "Nope. Nope nope nope.",
+    "Only in DC.",
+    "Did that rat just run past me?",
+    "Somebody call 311!",
+    "Twenty years in this city and that's the biggest rat I've ever seen."
+  ]
+}

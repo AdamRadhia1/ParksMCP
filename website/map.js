@@ -40,22 +40,11 @@ const map = new mapboxgl.Map({
 map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), 'top-right');
 map.addControl(new mapboxgl.FullscreenControl({ container: document.body }), 'top-right');
 
-// Mirrors the real local time of day onto Mapbox Standard's lighting preset.
-function lightPresetForNow() {
-  const hour = new Date().getHours();
-  if (hour >= 5 && hour < 7) return 'dawn';
-  if (hour >= 7 && hour < 17) return 'day';
-  if (hour >= 17 && hour < 19) return 'dusk';
-  return 'night';
-}
-
+// Lighting preset and sky colors are set by sky.js, from the sun's real position.
 map.on('style.load', () => {
-  map.setConfigProperty('basemap', 'lightPreset', lightPresetForNow());
   map.setConfigProperty('basemap', 'showPointOfInterestLabels', true);
   // Standard's own 3D buildings use real footprints/heights plus modeled landmarks.
   map.setConfigProperty('basemap', 'show3dObjects', true);
-  // Remove the distance haze / horizon glow, keeping the sky itself.
-  map.setFog({ range: [10, 20], 'horizon-blend': 0 });
 
   if (!map.getSource('mapbox-dem')) {
     map.addSource('mapbox-dem', {
@@ -68,23 +57,39 @@ map.on('style.load', () => {
   map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.4 });
 });
 
-// Re-checks the real clock periodically so lighting keeps drifting with the
-// actual time of day across a long-running session, not just on load.
-function refreshTimeOfDay() {
-  map.setConfigProperty('basemap', 'lightPreset', lightPresetForNow());
-}
-setInterval(refreshTimeOfDay, 5 * 60 * 1000);
-
 // queryTerrainElevation() returns null until the DEM tiles are actually
-// decoded, which can happen a beat after 'idle' fires. Poll on the render
-// loop until real elevations are available (capped, so a DEM failure can't
-// hang scenery forever) before draping any of the custom layers onto it.
+// decoded, which can happen a beat after 'idle' fires. Checking only
+// PARK_CENTER wasn't enough: DEM data loads progressively across the area,
+// so the center point could go valid while the grass/water grids' edges
+// (up to ~380m away) were still unready — and since those meshes are built
+// once into static buffers, whatever elevation happened to be available
+// at that instant (including 0-fallbacks from early failed queries) got
+// baked in permanently, tearing the mesh at the boundary where real data
+// kicked in partway through. Now checks several points spanning the full
+// meshed area, and requires them to stay valid for several consecutive
+// frames (not just one lucky frame) before anything gets built.
+const TERRAIN_READY_SAMPLE_POINTS = [
+  PARK_CENTER,
+  [PARK_WEST_LNG, PARK_SOUTH_LAT],
+  [PARK_WEST_LNG, PARK_NORTH_LAT],
+  [PARK_EAST_LNG, PARK_SOUTH_LAT],
+  [PARK_EAST_LNG, PARK_NORTH_LAT],
+  [CHANNEL_WEST_LNG, PARK_CENTER[1]],
+  [CHANNEL_EAST_LNG, PARK_CENTER[1]]
+];
+
 function whenTerrainReady(cb) {
   let attempts = 0;
+  let consecutiveOk = 0;
+  const REQUIRED_CONSECUTIVE = 6;
   function check() {
-    const e = map.queryTerrainElevation(PARK_CENTER, { exaggerated: true });
     attempts++;
-    if ((e !== null && e !== undefined) || attempts > 300) { cb(); return; }
+    const allFinite = TERRAIN_READY_SAMPLE_POINTS.every((pt) => {
+      const e = map.queryTerrainElevation(pt, { exaggerated: true });
+      return Number.isFinite(e);
+    });
+    consecutiveOk = allFinite ? consecutiveOk + 1 : 0;
+    if (consecutiveOk >= REQUIRED_CONSECUTIVE || attempts > 600) { cb(); return; }
     requestAnimationFrame(check);
   }
   check();
@@ -92,10 +97,13 @@ function whenTerrainReady(cb) {
 
 map.once('idle', () => {
   whenTerrainReady(() => {
-    addGrassLayer();
-    addWaterLayer();
+    // Grass/water layers removed — even after fixing the precision bug that
+    // was smearing them across the whole city, the water channel's own
+    // shape/sizing was still wrong (oversized, bleeding past the park into
+    // the street). Trees use the same safe matrix pattern and don't have
+    // that problem, so they stay. Life layer (ambient people/cars) removed
+    // per request — the rat's the only character on the map now.
     addTreeLayer();
-    addLifeLayer();
   });
 });
 
@@ -305,10 +313,32 @@ function lerp(a, b, t) { return a + (b - a) * t; }
 // Builds a grid mesh over a lng/lat rectangle, draping each vertex onto the
 // actual queried terrain elevation (matching the same exaggeration the
 // basemap renders with) plus a small constant lift to avoid z-fighting.
+//
+// Positions are stored as raw MercatorCoordinates (what Mapbox's own custom
+// layer `matrix` expects directly), not local meters-from-origin rescaled
+// through our own matrix — this grid spans hundreds of meters, and reducing
+// that combination of a huge projection matrix with a ~1e-8 meter-to-mercator
+// scale factor to float32 was losing enough precision to visibly smear the
+// mesh (worse the farther a vertex sat from the shared origin). Small,
+// localized layers (trees, people, cars, ponds) don't show this because
+// they never get far enough from their own anchor for it to matter.
+// Non-indexed (each quad's 6 vertices duplicated rather than shared via an
+// index buffer) — matching the pattern every other working custom layer in
+// this file uses. Grass/water were the only indexed drawElements() layers
+// and the only ones showing a severe render-time mesh distortion despite
+// verified-clean input data; switching off indexing eliminates it.
+// Positions are built in LOCAL METERS relative to the shared `origin`
+// (matching buildTree/buildPerson/buildCar below), not raw absolute
+// MercatorCoordinates. Raw Mercator values are ~1e-8-scale fractions;
+// combining them with the huge camera projection matrix collapsed enough
+// float32 precision to visibly smear this exact grid across huge distances
+// (worse the farther a vertex sat from the map's coordinate origin) — the
+// grass/water-specific "severe render-time mesh distortion" mentioned
+// below turned out to be this, not the indexed-vs-non-indexed issue that
+// was fixed at the time. Trees/people/cars never showed it because they
+// already used local-meters + a small origin-translation matrix.
 function buildGrid(lngMin, lngMax, latMin, latMax, nx, ny, lift) {
-  const positions = [];
-  const uvs = [];
-  const indices = [];
+  const grid = [];
 
   // queryTerrainElevation can intermittently return null for individual
   // points even long after the DEM is loaded (seen across ~700 rapid calls
@@ -319,31 +349,36 @@ function buildGrid(lngMin, lngMax, latMin, latMax, nx, ny, lift) {
   let lastElev = 0;
   for (let j = 0; j <= ny; j++) {
     const lat = lerp(latMin, latMax, j / ny);
+    const row = [];
     for (let i = 0; i <= nx; i++) {
       const lng = lerp(lngMin, lngMax, i / nx);
-      const [x, y] = toLocalMeters(lng, lat);
       const queried = map.queryTerrainElevation([lng, lat], { exaggerated: true });
       const base = queried !== null && queried !== undefined ? queried : lastElev;
       lastElev = base;
-      positions.push(x, y, base + lift);
-      uvs.push(i / nx, j / ny);
+      const [lx, ly] = toLocalMeters(lng, lat);
+      row.push({ pos: [lx, ly, base + lift], uv: [i / nx, j / ny] });
     }
+    grid.push(row);
   }
 
+  const positions = [];
+  const uvs = [];
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      const a = j * (nx + 1) + i;
-      const b = a + 1;
-      const c = a + (nx + 1);
-      const d = c + 1;
-      indices.push(a, c, b, b, c, d);
+      const a = grid[j][i], b = grid[j][i + 1], c = grid[j + 1][i], d = grid[j + 1][i + 1];
+      [[a, c, b], [b, c, d]].forEach((tri) => {
+        tri.forEach((v) => {
+          positions.push(v.pos[0], v.pos[1], v.pos[2]);
+          uvs.push(v.uv[0], v.uv[1]);
+        });
+      });
     }
   }
 
   return {
     positions: new Float32Array(positions),
     uvs: new Float32Array(uvs),
-    indices: new Uint16Array(indices)
+    count: positions.length / 3
   };
 }
 
@@ -380,6 +415,9 @@ const grassVertexSrc = `
   varying vec2 v_uv;
   varying float v_bump;
   void main() {
+    // a_position is local meters now (see buildGrid) — u_matrix already
+    // folds in the meters-to-mercator scale, so these offsets (already
+    // real meter quantities) are added directly, no separate scaling.
     float bump = sin(a_uv.x * 42.0) * cos(a_uv.y * 37.0) * 0.035;
     float sway = sin(u_time * 1.4 + a_uv.x * 18.0 + a_uv.y * 12.0) * 0.025;
     vec3 pos = a_position;
@@ -434,15 +472,14 @@ function addGrassLayer() {
         gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, mesh.uvs, gl.STATIC_DRAW);
 
-        const idxBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuffer);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
-
-        return { posBuffer, uvBuffer, idxBuffer, count: mesh.indices.length };
+        return { posBuffer, uvBuffer, count: mesh.count };
       });
     },
 
     render(gl, matrix) {
+      // Local-meters positions (see buildGrid) need the same origin-
+      // translate + meters-to-mercator scale as the tree/life layers,
+      // instead of using the camera matrix directly.
       const modelMatrix = translationMat4(origin.x, origin.y, 0);
       const finalMatrix = multiplyMat4(
         Array.from(matrix),
@@ -464,8 +501,7 @@ function addGrassLayer() {
         gl.enableVertexAttribArray(this.aUv);
         gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, 0, 0);
 
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idxBuffer);
-        gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
       });
 
       map.triggerRepaint();
@@ -486,6 +522,8 @@ const waterVertexSrc = `
   uniform float u_time;
   varying vec2 v_uv;
   void main() {
+    // a_position is local meters now (see buildGrid/buildPondMesh) —
+    // u_matrix already folds in the meters-to-mercator scale.
     float ripple = sin(a_uv.y * 34.0 - u_time * 2.2) * 0.018
                   + sin(a_uv.x * 20.0 + u_time * 1.4) * 0.012;
     vec3 pos = a_position;
@@ -558,40 +596,40 @@ function buildPondMesh(ponds) {
   const positions = [];
   const uvs = [];
   ponds.forEach((ring) => {
-    let pts = ring.map(([lng, lat]) => {
-      const [x, y] = toLocalMeters(lng, lat);
-      return [x, y, lng, lat];
-    });
+    let pts = ring.slice();
     if (pts.length > 1) {
       const a = pts[0], b = pts[pts.length - 1];
-      if (Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6) pts = pts.slice(0, -1);
+      if (Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9) pts = pts.slice(0, -1);
     }
     if (pts.length < 3) return;
 
     let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
-    let cx = 0, cy = 0;
-    pts.forEach(([x, y, lng, lat]) => {
+    pts.forEach(([lng, lat]) => {
       minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng);
       minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
-      cx += x; cy += y;
     });
     const n = pts.length;
-    cx /= n; cy /= n;
     const centerLng = (minLng + maxLng) / 2;
     const centerLat = (minLat + maxLat) / 2;
-    const cz = (map.queryTerrainElevation([centerLng, centerLat], { exaggerated: true }) || 0) + 0.05;
+    const cElev = (map.queryTerrainElevation([centerLng, centerLat], { exaggerated: true }) || 0) + 0.05;
+    const [ccx, ccy] = toLocalMeters(centerLng, centerLat);
 
     const spanLng = Math.max(maxLng - minLng, 1e-9);
     const spanLat = Math.max(maxLat - minLat, 1e-9);
+    const localPts = pts.map(([lng, lat]) => toLocalMeters(lng, lat));
 
     for (let i = 0; i < n; i++) {
-      const a = pts[i];
-      const b = pts[(i + 1) % n];
-      positions.push(cx, cy, cz, a[0], a[1], cz, b[0], b[1], cz);
+      const a = localPts[i], aLngLat = pts[i];
+      const b = localPts[(i + 1) % n], bLngLat = pts[(i + 1) % n];
+      positions.push(
+        ccx, ccy, cElev,
+        a[0], a[1], cElev,
+        b[0], b[1], cElev
+      );
       uvs.push(
         0.5, 0.5,
-        (a[2] - minLng) / spanLng, (a[3] - minLat) / spanLat,
-        (b[2] - minLng) / spanLng, (b[3] - minLat) / spanLat
+        (aLngLat[0] - minLng) / spanLng, (aLngLat[1] - minLat) / spanLat,
+        (bLngLat[0] - minLng) / spanLng, (bLngLat[1] - minLat) / spanLat
       );
     }
   });
@@ -623,11 +661,7 @@ function addWaterLayer() {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, mesh.uvs, gl.STATIC_DRAW);
 
-      this.idxBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuffer);
-      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
-
-      this.count = mesh.indices.length;
+      this.count = mesh.count;
 
       this.pondCount = pondMesh.count;
       if (this.pondCount) {
@@ -642,6 +676,8 @@ function addWaterLayer() {
     },
 
     render(gl, matrix) {
+      // Local-meters positions (see buildGrid/buildPondMesh) need the same
+      // origin-translate + meters-to-mercator scale as the tree/life layers.
       const modelMatrix = translationMat4(origin.x, origin.y, 0);
       const finalMatrix = multiplyMat4(
         Array.from(matrix),
@@ -664,8 +700,7 @@ function addWaterLayer() {
       gl.enableVertexAttribArray(this.aUv);
       gl.vertexAttribPointer(this.aUv, 2, gl.FLOAT, false, 0, 0);
 
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuffer);
-      gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, this.count);
 
       if (this.pondCount) {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.pondPosBuffer);

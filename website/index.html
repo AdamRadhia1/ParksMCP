@@ -4,13 +4,16 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Meridian Hill Park (Malcolm X Park) — 3D Map</title>
-<link href="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css" rel="stylesheet" />
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.30.0/mapbox-gl.css" rel="stylesheet" />
 <link href="style.css" rel="stylesheet" />
-<script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.30.0/mapbox-gl.js"></script>
 </head>
 <body>
 
 <div id="map"></div>
+<div id="npc-talk-layer"></div>
+
+<div id="rat-hint"><strong>Rat parked.</strong> Use the map controls, or press "Rat" to take over.</div>
 
 <div id="header">
   <h1>Meridian Hill Park <span style="color:var(--text-dim); font-weight:normal;">/ Malcolm X Park</span></h1>
@@ -50,13 +53,12 @@
 </div>
 
 <div id="controls">
+  <button id="rat-mode-toggle">Rat</button>
   <button id="photos-open">Photos</button>
   <button id="tilt-toggle">Toggle Tilt</button>
   <button id="rotate-toggle">Auto-Rotate</button>
   <button id="drag-rotate-toggle">Drag: Pan</button>
   <button id="reset-view">Reset View</button>
-  <button id="walk-toggle">Walk Mode</button>
-  <button id="drag-mode-toggle">Drag: Look</button>
 </div>
 
 <div id="photos-modal" hidden>
@@ -68,22 +70,14 @@
   </div>
 </div>
 
-<div id="walk-fade"></div>
-
-<div id="walk-hint">
-  <strong>Walking</strong><br />
-  WASD / Arrows — move &nbsp;·&nbsp; Shift — run &nbsp;·&nbsp; Esc — exit<br />
-  Drag: Look — drag to look around, click ground to walk there<br />
-  Drag: Move — drag as a joystick to walk in that direction<br />
-  Drag: Rotate — drag left/right to turn in place
-</div>
-
-<div id="joystick-base"></div>
-<div id="joystick-knob"></div>
-
+<script src="https://unpkg.com/three@0.126.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.126.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="config.js"></script>
 <script src="map.js"></script>
-<script src="walk.js"></script>
+<script src="sky.js"></script>
+<script src="actors.js"></script>
+<script src="rat.js"></script>
+<script src="npcs.js"></script>
 <script src="directions.js"></script>
 <script src="events.js"></script>
 <script src="photos.js"></script>
